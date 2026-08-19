@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Piano Trainer score package manifest",
+  "type": "object",
+  "required": ["schemaVersion", "id", "title", "sourceMidi", "score", "mapping"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "id": { "type": "string", "minLength": 1 },
+    "title": { "type": "string", "minLength": 1 },
+    "sourceMidi": { "type": "string", "const": "source.mid" },
+    "score": { "type": "string", "const": "score.musicxml" },
+    "mapping": { "type": "string", "const": "mapping.json" },
+    "pages": { "type": "object" },
+    "sha256": { "type": "object", "additionalProperties": { "type": "string", "pattern": "^[a-f0-9]{64}$" } }
+  },
+  "additionalProperties": false
+}

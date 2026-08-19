@@ -1,0 +1,14 @@
+.DS_Store
+.idea/
+.gradle/
+**/build/
+local.properties
+*.iml
+local-content/
+*.apk
+*.aab
+*.jks
+*.keystore
+.venv/
+__pycache__/
+*.pyc
