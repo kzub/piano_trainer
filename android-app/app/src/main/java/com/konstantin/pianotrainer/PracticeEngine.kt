@@ -20,6 +20,8 @@ data class PracticeState(
     val wrong: Set<Int> = emptySet(),
     val finished: Boolean = false,
     val currentTick: Long? = null,
+    val correctGroups: Int = 0,
+    val missedGroups: Int = 0,
 )
 
 class WaitingPractice(
@@ -79,6 +81,68 @@ class WaitingPractice(
             wrong = attempted.minus(expected),
             finished = finished,
             currentTick = if (finished) null else groups[index].tick,
+        )
+    }
+}
+
+/**
+ * Non-blocking practice for Play: playback advances independently, while incoming
+ * keyboard events are compared with the current MIDI group inside a tolerance window.
+ */
+class ContinuousFeedback(
+    private val groups: List<ExpectedGroup>,
+    private val toleranceTicks: Long,
+) {
+    private var index = 0
+    private val accepted = linkedSetOf<Int>()
+    private val attempted = linkedSetOf<Int>()
+    private val wrong = linkedSetOf<Int>()
+    private var correctGroups = 0
+    private var missedGroups = 0
+
+    fun playbackTick(tick: Long): PracticeState {
+        advancePast(tick)
+        return state()
+    }
+
+    fun notePressed(pitch: Int, tick: Long): PracticeState {
+        advancePast(tick)
+        val group = groups.getOrNull(index) ?: return state()
+        if (kotlin.math.abs(tick - group.tick) <= toleranceTicks) {
+            attempted += pitch
+            if (pitch in group.pitches) accepted += pitch else wrong += pitch
+        } else {
+            attempted += pitch
+            wrong += pitch
+        }
+        return state()
+    }
+
+    private fun advancePast(tick: Long) {
+        while (index < groups.size && tick > groups[index].tick + toleranceTicks) {
+            if (accepted.containsAll(groups[index].pitches)) correctGroups++ else missedGroups++
+            index++
+            accepted.clear()
+            attempted.clear()
+            wrong.clear()
+        }
+    }
+
+    private fun state(): PracticeState {
+        val group = groups.getOrNull(index)
+        return PracticeState(
+            completed = index,
+            total = groups.size,
+            expected = group?.pitches.orEmpty(),
+            expectedLeft = group?.leftPitches.orEmpty(),
+            expectedRight = group?.rightPitches.orEmpty(),
+            accepted = accepted.toSet(),
+            attempted = attempted.toSet(),
+            wrong = wrong.toSet(),
+            finished = group == null,
+            currentTick = group?.tick,
+            correctGroups = correctGroups,
+            missedGroups = missedGroups,
         )
     }
 }

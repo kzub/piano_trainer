@@ -278,6 +278,8 @@ private fun ScoreScreen(score: ScorePackage, repository: ScorePackageRepository,
     var playbackError by remember { mutableStateOf<String?>(null) }
     var practice by remember { mutableStateOf<WaitingPractice?>(null) }
     var practiceState by remember { mutableStateOf<PracticeState?>(null) }
+    var continuousFeedback by remember { mutableStateOf<ContinuousFeedback?>(null) }
+    var feedbackState by remember { mutableStateOf<PracticeState?>(null) }
     var playbackState by remember { mutableStateOf<MidiPlaybackState?>(null) }
     val practiceData = remember(score.id) {
         runCatching { repository.practicePpq(score) to repository.practiceGroups(score) }
@@ -295,6 +297,11 @@ private fun ScoreScreen(score: ScorePackage, repository: ScorePackageRepository,
         practice?.let { engine ->
             practiceState = if (pressed) engine.notePressed(pitch, SystemClock.uptimeMillis()) else engine.noteReleased(pitch)
         }
+        if (practice == null && playing && pressed) {
+            continuousFeedback?.let { engine ->
+                feedbackState = engine.notePressed(pitch, playbackState?.tick ?: 0L)
+            }
+        }
     }
     LaunchedEffect(practice) {
         while (practice != null) {
@@ -307,6 +314,8 @@ private fun ScoreScreen(score: ScorePackage, repository: ScorePackageRepository,
     LaunchedEffect(cursorMeasure) {
         cursorMeasure?.let { measure -> repository.pageForMeasure(score, measure)?.let { page = it } }
     }
+    val visibleLearningState = practiceState ?: feedbackState
+    val isContinuousFeedback = practiceState == null && feedbackState != null
     val hasPages = score.normalPages.isNotEmpty()
     Column(modifier = Modifier.fillMaxSize()) {
         Row(
@@ -337,6 +346,8 @@ private fun ScoreScreen(score: ScorePackage, repository: ScorePackageRepository,
                         rangeSelectionMode = null
                         practice = null
                         practiceState = null
+                        continuousFeedback = null
+                        feedbackState = null
                     },
                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
                     enabled = selectedFromTick != null || selectedToTick != null,
@@ -355,6 +366,8 @@ private fun ScoreScreen(score: ScorePackage, repository: ScorePackageRepository,
                                     handMenuExpanded = false
                                     practice = null
                                     practiceState = null
+                                    continuousFeedback = null
+                                    feedbackState = null
                                 },
                             )
                         }
@@ -364,6 +377,8 @@ private fun ScoreScreen(score: ScorePackage, repository: ScorePackageRepository,
                     playback.stop()
                     playing = false
                     playbackState = null
+                    continuousFeedback = null
+                    feedbackState = null
                     runCatching {
                         val (ppq, groups) = practiceData.getOrThrow()
                         practicePpq = ppq
@@ -379,6 +394,8 @@ private fun ScoreScreen(score: ScorePackage, repository: ScorePackageRepository,
                     }.onSuccess { engine ->
                         practice = engine
                         practiceState = engine.current()
+                        continuousFeedback = null
+                        feedbackState = null
                         val initialMeasure = ((engine.current().currentTick ?: 0L) / (practicePpq * 4L)).toInt() + 1
                         page = repository.pageForMeasure(score, initialMeasure) ?: 0
                         playbackError = null
@@ -390,19 +407,39 @@ private fun ScoreScreen(score: ScorePackage, repository: ScorePackageRepository,
                         playback.stop()
                         playing = false
                         playbackState = null
+                        continuousFeedback = null
+                        feedbackState = null
                     } else {
                         runCatching {
                             practice = null
                             practiceState = null
                             val (ppq, groups) = practiceData.getOrThrow()
                             practicePpq = ppq
+                            val selectedGroups = groups.asSequence()
+                                .filter { group ->
+                                    group.tick >= (selectedFromTick ?: Long.MIN_VALUE) &&
+                                        group.tick <= (selectedToTick ?: Long.MAX_VALUE)
+                                }
+                                .mapNotNull(practiceHands::select)
+                                .toList()
+                            require(selectedGroups.isNotEmpty()) { "В выбранном интервале нет нот для оценки" }
+                            continuousFeedback = ContinuousFeedback(selectedGroups, toleranceTicks = ppq / 2L)
+                            feedbackState = continuousFeedback!!.playbackTick(selectedFromTick ?: 0L)
                             val untilTick = selectedToTick?.let { end -> groups.firstOrNull { it.tick > end }?.tick }
                             playback.play(
                                 repository.sourceMidi(score),
                                 fromTick = selectedFromTick ?: 0L,
                                 untilTick = untilTick,
-                                onProgress = { playbackState = it },
-                                onFinished = { playing = false; playbackState = null },
+                                onProgress = { state ->
+                                    playbackState = state
+                                    continuousFeedback?.let { feedbackState = it.playbackTick(state.tick) }
+                                },
+                                onFinished = {
+                                    continuousFeedback?.let { feedbackState = it.playbackTick(Long.MAX_VALUE) }
+                                    playing = false
+                                    playbackState = null
+                                    continuousFeedback = null
+                                },
                             )
                         }.onSuccess { playing = true; playbackError = null }
                             .onFailure { playbackError = it.message ?: "Не удалось запустить MIDI" }
@@ -411,13 +448,18 @@ private fun ScoreScreen(score: ScorePackage, repository: ScorePackageRepository,
                 Text(if (hasPages) "${page + 1}/${score.normalPages.size}" else "нет страниц", color = Color(0xFFB8C7D9))
             }
         }
-        practiceState?.let { state ->
+        visibleLearningState?.let { state ->
             Row(
                 modifier = Modifier.fillMaxWidth().background(Color(0xFFE7EEF7)).padding(horizontal = 10.dp, vertical = 7.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 if (state.finished) {
-                    Text("Готово: ${state.total} позиций сыграно", modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center, color = Color(0xFF173A61))
+                    val result = if (isContinuousFeedback) {
+                        "Итог: верно ${state.correctGroups}, пропущено ${state.missedGroups}"
+                    } else {
+                        "Готово: ${state.total} позиций сыграно"
+                    }
+                    Text(result, modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center, color = Color(0xFF173A61))
                 } else {
                     Text(
                         clefStatus("Басовый", state.expectedLeft, state.accepted),
@@ -427,7 +469,11 @@ private fun ScoreScreen(score: ScorePackage, repository: ScorePackageRepository,
                         color = Color(0xFF173A61),
                     )
                     Text(
-                        if (state.wrong.isEmpty()) "${state.completed + 1}/${state.total}" else "Ошибка: ${state.wrong.sorted().joinToString(" ", transform = ::midiSolfegeName)}",
+                        if (state.wrong.isEmpty()) {
+                            if (isContinuousFeedback) "Оценка ${state.correctGroups}/${state.total}" else "${state.completed + 1}/${state.total}"
+                        } else {
+                            "Ошибка: ${state.wrong.sorted().joinToString(" ", transform = ::midiSolfegeName)}"
+                        },
                         modifier = Modifier.padding(horizontal = 12.dp),
                         maxLines = 1,
                         color = if (state.wrong.isEmpty()) Color(0xFF4A6178) else Color(0xFFB3261E),
@@ -473,15 +519,17 @@ private fun ScoreScreen(score: ScorePackage, repository: ScorePackageRepository,
                             playbackState = null
                             practice = null
                             practiceState = null
+                            continuousFeedback = null
+                            feedbackState = null
                         }
                     }
                     val svg = runCatching { repository.pageSvg(score, page) }.getOrElse { "<svg xmlns='http://www.w3.org/2000/svg'><text x='30' y='50'>${it.message}</text></svg>" }
                     val key = "${score.id}:$page"
-                    val displayedNotes = practiceState?.expected ?: playbackState?.activePitches.orEmpty()
-                    val acceptedNotes = practiceState?.accepted ?: playbackState?.activePitches.orEmpty()
+                    val displayedNotes = visibleLearningState?.expected ?: playbackState?.activePitches.orEmpty()
+                    val acceptedNotes = visibleLearningState?.accepted ?: playbackState?.activePitches.orEmpty()
                     val expected = displayedNotes.joinToString(",")
                     val accepted = acceptedNotes.joinToString(",")
-                    val attempted = practiceState?.attempted?.joinToString(",").orEmpty()
+                    val attempted = visibleLearningState?.attempted?.joinToString(",").orEmpty()
                     val tickInMeasure = cursorTick?.rem(practicePpq * 4L) ?: 0L
                     val alignCursorToExpected = practiceState != null
                     val cursorScript = if (cursorMeasure == null) "document.querySelectorAll('.note').forEach(n=>colorNote(n,'black'));clearPracticeCursor()" else "highlightNotes($cursorMeasure,[$expected],[$accepted],[$attempted],$tickInMeasure,${practicePpq * 4L},$alignCursorToExpected)"
