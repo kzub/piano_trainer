@@ -66,6 +66,12 @@ def validate_mapping(path: Path) -> dict:
             raise ValueError(f"mapping event {index} has invalid hand")
         if not isinstance(event["scoreNoteIds"], list):
             raise ValueError(f"mapping event {index} has invalid scoreNoteIds")
+        if mapping.get("kind") == "exact-score" and not event["scoreNoteIds"]:
+            raise ValueError(f"exact mapping event {index} has no score note IDs")
+    if mapping.get("kind") == "exact-score":
+        measures = mapping.get("measures")
+        if not isinstance(measures, list) or not measures:
+            raise ValueError("exact mapping must contain a non-empty measures array")
     return mapping
 
 
@@ -99,7 +105,7 @@ def main() -> int:
             page_names.append(name)
         pages["normal"] = page_names
     manifest = {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "id": package_id,
         "title": args.title,
         "sourceMidi": "source.mid",

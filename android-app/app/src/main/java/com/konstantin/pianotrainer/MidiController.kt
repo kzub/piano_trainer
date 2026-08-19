@@ -20,6 +20,50 @@ import java.util.UUID
 
 data class MidiEndpoint(val info: MidiDeviceInfo, val label: String)
 
+internal sealed interface IncomingMidiEvent {
+    data class Note(val pitch: Int, val velocity: Int, val pressed: Boolean) : IncomingMidiEvent
+    data class SustainPedal(val pressed: Boolean) : IncomingMidiEvent
+}
+
+/**
+ * Android may batch several MIDI messages into one MidiReceiver callback.
+ * Decode the complete byte range; reading just its first message loses Note Off
+ * events and leaves a key incorrectly marked as held in the practice engine.
+ */
+internal fun decodeMidiMessages(message: ByteArray, offset: Int, count: Int): List<IncomingMidiEvent> {
+    val events = mutableListOf<IncomingMidiEvent>()
+    var cursor = offset.coerceIn(0, message.size)
+    val end = (offset + count).coerceIn(cursor, message.size)
+    var runningStatus = -1
+    while (cursor < end) {
+        val first = message[cursor].toInt() and 0xFF
+        val status = if (first >= 0x80) {
+            cursor++
+            if (first >= 0xF8) continue // realtime messages have no data bytes
+            if (first >= 0xF0) {
+                runningStatus = -1
+                continue // system messages are irrelevant to note practice
+            }
+            runningStatus = first
+            first
+        } else {
+            if (runningStatus < 0) break
+            runningStatus
+        }
+        val command = status and 0xF0
+        val dataCount = if (command == 0xC0 || command == 0xD0) 1 else 2
+        if (cursor + dataCount > end) break
+        val data1 = message[cursor++].toInt() and 0x7F
+        val data2 = if (dataCount == 2) message[cursor++].toInt() and 0x7F else 0
+        when {
+            command == 0x90 && data2 > 0 -> events += IncomingMidiEvent.Note(data1, data2, pressed = true)
+            command == 0x80 || (command == 0x90 && data2 == 0) -> events += IncomingMidiEvent.Note(data1, data2, pressed = false)
+            command == 0xB0 && data1 == 64 -> events += IncomingMidiEvent.SustainPedal(data2 >= 64)
+        }
+    }
+    return events
+}
+
 class MidiController(context: Context) {
     private val mainHandler = Handler(Looper.getMainLooper())
     private val midiManager = context.getSystemService(MidiManager::class.java)
@@ -36,18 +80,21 @@ class MidiController(context: Context) {
 
     private val receiver = object : MidiReceiver() {
         override fun onSend(message: ByteArray, offset: Int, count: Int, timestamp: Long) {
-            if (count < 3) return
-            val status = message[offset].toInt() and 0xF0
-            val note = message[offset + 1].toInt() and 0x7F
-            val velocity = message[offset + 2].toInt() and 0x7F
-            val text = when {
-                status == 0x90 && velocity > 0 -> "Получена нота $note (velocity $velocity)"
-                status == 0x80 || (status == 0x90 && velocity == 0) -> "Отпущена нота $note"
-                status == 0xB0 && note == 64 -> if (velocity >= 64) "Педаль нажата" else "Педаль отпущена"
-                else -> return
+            decodeMidiMessages(message, offset, count).forEach { event ->
+                when (event) {
+                    is IncomingMidiEvent.Note -> {
+                        val text = if (event.pressed) {
+                            "Получена нота ${event.pitch} (velocity ${event.velocity})"
+                        } else {
+                            "Отпущена нота ${event.pitch}"
+                        }
+                        mainHandler.post { onStatus(text); onNote(event.pitch, event.velocity, event.pressed) }
+                    }
+                    is IncomingMidiEvent.SustainPedal -> {
+                        mainHandler.post { onStatus(if (event.pressed) "Педаль нажата" else "Педаль отпущена") }
+                    }
+                }
             }
-            val pressed = status == 0x90 && velocity > 0
-            mainHandler.post { onStatus(text); onNote(note, velocity, pressed) }
         }
     }
 

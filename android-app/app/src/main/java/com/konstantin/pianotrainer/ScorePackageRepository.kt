@@ -14,6 +14,20 @@ data class ScorePackage(
     val normalPages: List<String>,
 )
 
+data class ScoreMeasure(
+    val number: Int,
+    val startTick: Long,
+    val durationTicks: Long,
+)
+
+data class PracticeTimeline(
+    val ppq: Int,
+    val measures: List<ScoreMeasure>,
+    val groups: List<ExpectedGroup>,
+) {
+    fun measureAt(tick: Long): ScoreMeasure? = measures.lastOrNull { it.startTick <= tick }
+}
+
 class ScorePackageRepository(private val context: Context) {
     private val scoreDirectory = File(context.filesDir, "scores").apply { mkdirs() }
 
@@ -61,31 +75,81 @@ class ScorePackageRepository(private val context: Context) {
             ?: error("В пакете нет исходного MIDI")
     }
 
-    fun practiceGroups(score: ScorePackage): List<ExpectedGroup> = ZipFile(score.file).use { archive ->
+    fun practiceTimeline(score: ScorePackage): PracticeTimeline = ZipFile(score.file).use { archive ->
         val entry = archive.getEntry("mapping.json") ?: error("В пакете нет MIDI mapping")
-        val events = archive.getInputStream(entry).bufferedReader().use { JSONObject(it.readText()).getJSONArray("events") }
-        val groups = linkedMapOf<String, PracticeGroupBuilder>()
-        repeat(events.length()) { index ->
-            val event = events.getJSONObject(index)
-            if (event.optString("hand") == "excluded") return@repeat
-            val id = event.getString("expectedGroupId")
-            val group = groups.getOrPut(id) { PracticeGroupBuilder(event.getLong("onTick")) }
-            val pitch = event.getInt("pitch")
-            if (event.optString("hand") == "left") group.left += pitch else group.right += pitch
+        val mapping = archive.getInputStream(entry).bufferedReader().use { JSONObject(it.readText()) }
+        val events = mapping.getJSONArray("events")
+        val eventList = List(events.length()) { index -> events.getJSONObject(index) }
+        val sourceHands = if (mapping.optString("kind") == "timeline-only") {
+            inferDominantTimelineHands(eventList.mapNotNull { event ->
+                if (!event.has("track") || !event.has("channel")) return@mapNotNull null
+                TimelineHandObservation(
+                    source = MidiSource(event.getInt("track"), event.getInt("channel")),
+                    declaredHand = event.optString("hand"),
+                )
+            })
+        } else {
+            emptyMap()
         }
-        groups.map { (id, value) -> ExpectedGroup(id, value.tick, value.left, value.right) }
+        val measures = mapping.optJSONArray("measures")?.let { values ->
+            List(values.length()) { index ->
+                values.getJSONObject(index).let { measure ->
+                    ScoreMeasure(
+                        number = measure.getInt("number"),
+                        startTick = measure.getLong("startTick"),
+                        durationTicks = measure.getLong("durationTicks"),
+                    )
+                }
+            }
+        }.orEmpty()
+        val groups = linkedMapOf<String, PracticeGroupBuilder>()
+        eventList.forEach { event ->
+            if (event.optString("hand") == "excluded") return@forEach
+            val id = event.getString("expectedGroupId")
+            val tick = event.getLong("onTick")
+            val group = groups.getOrPut(id) {
+                PracticeGroupBuilder(tick = tick, measure = event.optInt("measure").takeIf { it > 0 })
+            }
+            require(group.tick == tick) { "Ожидаемая группа $id содержит разные моменты времени" }
+            val pitch = event.getInt("pitch")
+            val source = if (event.has("track") && event.has("channel")) {
+                MidiSource(event.getInt("track"), event.getInt("channel"))
+            } else {
+                null
+            }
+            val hand = source?.let(sourceHands::get) ?: event.optString("hand")
+            val scoreIds = event.optJSONArray("scoreNoteIds")?.let { ids ->
+                (0 until ids.length()).mapTo(linkedSetOf()) { ids.getString(it) }
+            }.orEmpty()
+            if (hand == "left") {
+                group.left += pitch
+                group.leftScoreNoteIds += scoreIds
+            } else {
+                group.right += pitch
+                group.rightScoreNoteIds += scoreIds
+            }
+        }
+        PracticeTimeline(
+            ppq = mapping.optInt("ppq", 480),
+            measures = measures,
+            groups = groups.map { (id, value) ->
+                ExpectedGroup(
+                    id, value.tick, value.left, value.right, value.measure,
+                    value.leftScoreNoteIds, value.rightScoreNoteIds,
+                )
+            }.sortedWith(compareBy<ExpectedGroup> { it.tick }.thenBy { it.id }),
+        )
     }
 
-    fun practicePpq(score: ScorePackage): Int = ZipFile(score.file).use { archive ->
-        val entry = archive.getEntry("mapping.json") ?: error("В пакете нет MIDI mapping")
-        archive.getInputStream(entry).bufferedReader().use { JSONObject(it.readText()).optInt("ppq", 480) }
-    }
+    fun practiceGroups(score: ScorePackage): List<ExpectedGroup> = practiceTimeline(score).groups
+
+    fun practicePpq(score: ScorePackage): Int = practiceTimeline(score).ppq
 
     private fun readPackage(file: File): ScorePackage? = runCatching {
         ZipFile(file).use { archive ->
             val manifestEntry = archive.getEntry("manifest.json") ?: error("В пакете нет manifest.json")
             val manifest = archive.getInputStream(manifestEntry).bufferedReader().use { JSONObject(it.readText()) }
-            require(manifest.optInt("schemaVersion") == 1) { "Неподдерживаемая версия пакета" }
+            require(manifest.optInt("schemaVersion") in 1..2) { "Неподдерживаемая версия пакета" }
             val id = manifest.getString("id")
             val title = manifest.getString("title")
             val requiredFiles = listOf(
@@ -122,6 +186,9 @@ class ScorePackageRepository(private val context: Context) {
 
 private data class PracticeGroupBuilder(
     val tick: Long,
+    val measure: Int?,
     val left: MutableSet<Int> = linkedSetOf(),
     val right: MutableSet<Int> = linkedSetOf(),
+    val leftScoreNoteIds: MutableSet<String> = linkedSetOf(),
+    val rightScoreNoteIds: MutableSet<String> = linkedSetOf(),
 )

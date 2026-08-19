@@ -3,6 +3,7 @@ package com.konstantin.pianotrainer
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import kotlin.math.roundToLong
 
 data class MidiPlaybackState(
     val tick: Long,
@@ -13,15 +14,19 @@ class MidiPlayback(private val controller: MidiController) {
     private val handler = Handler(Looper.getMainLooper())
     private val scheduled = mutableListOf<Runnable>()
     private val activeNotes = linkedSetOf<Int>()
+    private var generation = 0L
 
     fun play(
         midi: ByteArray,
         fromTick: Long = 0L,
         untilTick: Long? = null,
+        speed: Float = 1f,
         onProgress: (MidiPlaybackState) -> Unit,
         onFinished: () -> Unit,
     ) {
+        require(speed in 0.25f..2f) { "Скорость должна быть от 0,25× до 2×" }
         stop()
+        val session = generation
         val allEvents = MidiFile.parse(midi)
         val events = allEvents.filter { it.tick >= fromTick && (untilTick == null || it.tick < untilTick) }
         require(events.isNotEmpty()) { "В выбранном интервале нет MIDI-событий" }
@@ -29,23 +34,28 @@ class MidiPlayback(private val controller: MidiController) {
         val startedAt = SystemClock.uptimeMillis()
         events.forEach { event ->
             val task = Runnable {
+                if (session != generation) return@Runnable
                 controller.send(event.message)
                 updateActiveNotes(event.message)
             }
             scheduled += task
-            handler.postDelayed(task, event.millis - startMillis)
+            handler.postDelayed(task, ((event.millis - startMillis) / speed).roundToLong())
         }
-        val duration = (events.maxOfOrNull { it.millis } ?: startMillis) - startMillis
+        val musicDuration = (events.maxOfOrNull { it.millis } ?: startMillis) - startMillis
+        val realDuration = (musicDuration / speed).roundToLong()
         val ticker = object : Runnable {
             override fun run() {
-                val elapsed = (SystemClock.uptimeMillis() - startedAt).coerceIn(0L, duration)
-                onProgress(MidiPlaybackState(tickAt(events, elapsed + startMillis), activePitches()))
-                if (elapsed < duration) handler.postDelayed(this, 50L)
+                if (session != generation) return
+                val elapsedReal = (SystemClock.uptimeMillis() - startedAt).coerceIn(0L, realDuration)
+                val elapsedMusic = (elapsedReal * speed).roundToLong().coerceAtMost(musicDuration)
+                onProgress(MidiPlaybackState(tickAt(events, elapsedMusic + startMillis), activePitches()))
+                if (elapsedReal < realDuration) handler.postDelayed(this, 50L)
             }
         }
         scheduled += ticker
         handler.post(ticker)
         val finalTask = Runnable {
+            if (session != generation) return@Runnable
             scheduled.forEach(handler::removeCallbacks)
             scheduled.clear()
             activeNotes.clear()
@@ -53,10 +63,11 @@ class MidiPlayback(private val controller: MidiController) {
             onFinished()
         }
         scheduled += finalTask
-        handler.postDelayed(finalTask, duration + 100L)
+        handler.postDelayed(finalTask, realDuration + 100L)
     }
 
     fun stop() {
+        generation++
         scheduled.forEach(handler::removeCallbacks)
         scheduled.clear()
         activeNotes.clear()

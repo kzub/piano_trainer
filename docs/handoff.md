@@ -1,63 +1,60 @@
-# Контекст для продолжения в новом сеансе
+# Контекст для продолжения работы
 
-## Проект
+## Среда
 
 - Workspace: `/Users/konstantin/projects.my/piano_trainer`
-- Android module: `android-app`
-- Application ID: `com.konstantin.pianotrainer`
-- Устройство: Samsung SM-X230, Android 16 / One UI 8.5, landscape.
-- Пианино: Roland FP-30; BLE MIDI подтверждён пользователем, USB MIDI также поддерживается.
-- Пользователь просит всегда устанавливать новые сборки через ADB и показывать новый номер версии в приложении.
+- Android module: `android-app`; package: `com.konstantin.pianotrainer`.
+- Планшет: Samsung SM-X230, Android 16 / One UI 8.5. Последний ADB serial:
+  `R5GL63ELKFR` — всегда сначала проверять `adb devices -l`.
+- Пианино: Roland FP-30. BLE MIDI подтверждён пользователем; USB — supported fallback.
+- Пользователь просит ставить каждую новую сборку через ADB. Номер версии автоматически
+  меняется в `android-app/app/build.gradle.kts` и виден в шапке приложения.
 
-## Текущая реализация
+## Состояние на 2026-08-19
 
-- Native Kotlin + Compose, Android SDK 37, minSdk 31, targetSdk 36.
-- Версия динамическая: `versionName = 0.1.0-<epoch-seconds>` в `android-app/app/build.gradle.kts`.
-- Main UI/score viewer: `android-app/app/src/main/java/com/konstantin/pianotrainer/MainActivity.kt`.
-- MIDI transport: `MidiController.kt`.
-- MIDI parser/scheduler: `MidiPlayback.kt`.
-- Waiting mode: `PracticeEngine.kt`.
-- `.pianoscore` import/content API: `ScorePackageRepository.kt`.
-- Документация: `docs/current-status.md`, `docs/roadmap.md`.
+- Последняя установленная сборка: `v0.1.0-1787170049`.
+- `Listen to Your Heart` пересобрана в schema v2 `.pianoscore`, импортирована на
+  планшет и содержит три SVG-страницы 3360×1700.
+- 918/918 MIDI events имеют точную связь с SVG ID; не возвращаться к подбору ноты
+  только по высоте/X без явной причины.
+- `WaitingPractice` повторяет произведение/выбранный сегмент после последней группы.
+- Красные маркеры живут 250 мс, затем сохраняются только у удерживаемых клавиш.
+- `MidiController` декодирует весь входной MIDI callback. Это критично: старая версия
+  читала только первые три байта и могла пропускать Note Off при batched MIDI.
+- Play имеет скорости 0,25×, 0,5×, 0,75×, 1×, 1,25×, 1,5×; выбор доступен до запуска.
 
-## Контент и исходный пример
+## Основные файлы
 
-- Исходный MIDI пользователя: `/Users/konstantin/Drive/Hobby/Piano/Listen_To_Your_Heart__DHT_Roxette_1786967414114.mid`.
-- Подготовленные артефакты лежат в игнорируемой папке `local-content/`.
-- Текущий пакет на планшете был заменён debug-командой и содержит SVG с `data-n`, `data-pname`, `data-oct`.
-- Пакетный pipeline: MuseScore → MusicXML → `generate_timeline_mapping.py` → `render_pages.py` (Verovio) → `prepare_score.py`.
-- В mapping текущего примера есть `hand: left/right`, но `scoreNoteIds` пусты. Поэтому SVG-подсветка эвристическая.
+- `MainActivity.kt` — Compose UI, выбор диапазона/рук/скорости, WebView SVG overlay.
+- `MidiController.kt` — BLE/USB MIDI, полный decoder входящих сообщений.
+- `MidiPlayback.kt` — parser/scheduler MIDI, скорость Play, All Notes Off.
+- `PracticeEngine.kt` — ожидающее обучение и Play feedback.
+- `ScorePackageRepository.kt` — import, schema v1/v2, exact mapping и карта тактов.
+- `score-preparer/src/generate_timeline_mapping.py` — MusicXML ID и exact mapping.
+- `score-preparer/src/render_pages.py` — Verovio SVG без footer, нормализация viewBox.
+- `docs/review-2026-08-19.md` — технический review и известные риски.
 
-## Сборка и установка
-
-Обычная сборка:
+## Сборка, тесты, установка
 
 ```sh
 cd /Users/konstantin/projects.my/piano_trainer/android-app
-./gradlew :app:assembleDebug
+./gradlew :app:testDebugUnitTest :app:assembleDebug
+/Users/konstantin/Library/Android/sdk/platform-tools/adb devices -l
+/Users/konstantin/Library/Android/sdk/platform-tools/adb -s R5GL63ELKFR \
+  install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
-Если sandbox не может писать в `~/.gradle`, выполнять сборку с повышенным разрешением. В одном случае автоматическая проверка разрешения истекла по тайм-ауту; повторная попытка прошла успешно.
+Gradle может требовать повышенного разрешения из-за записи в `~/.gradle`.
 
-Установка по ADB (путь к исходному APK для escalated команды лучше сначала копировать во временный каталог):
+Чтобы доставить новый score package, положить его в Downloads и импортировать через UI:
 
 ```sh
-cp app/build/outputs/apk/debug/app-debug.apk /private/tmp/piano-trainer-debug.apk
-/Users/konstantin/Library/Android/sdk/platform-tools/adb devices -l
-/Users/konstantin/Library/Android/sdk/platform-tools/adb install -r /private/tmp/piano-trainer-debug.apk
-/Users/konstantin/Library/Android/sdk/platform-tools/adb shell monkey -p com.konstantin.pianotrainer -c android.intent.category.LAUNCHER 1
+adb -s R5GL63ELKFR push local-content/l2uh-v2.pianoscore \
+  /sdcard/Download/Listen_To_Your_Heart_v2.pianoscore
 ```
 
-Последний известный serial: `R5GL63ELKFR`; не предполагать, что он подключён — всегда проверять `adb devices -l`.
+## Следующий приоритет
 
-После переустановки debug APK MIDI-подключение обычно нужно выполнить заново через экран MIDI.
-
-## Последние изменения перед handoff
-
-Добавлены режимы ожидающего обучения `Обе`, `Левая`, `Правая`. Выбор находится в компактном меню кнопки `Обе` в верхней строке. Режим одной руки формирует учебные группы только из `leftPitches` или `rightPitches`; невыбранная рука не блокирует продвижение.
-
-Последняя установленная до продолжения работ версия: `v0.1.0-1787084104`. Новая собранная версия с непрерывной оценкой: `v0.1.0-1787121732`; она ещё не установлена, потому что ADB не увидел планшет.
-
-## Рекомендуемая первая задача следующего сеанса
-
-Подключить планшет, установить `v0.1.0-1787121732` по ADB и проверить непрерывную оценку на FP-30 по BLE и USB. Затем калибровать окно допуска и перейти к точной MIDI↔SVG привязке. См. `docs/roadmap.md`.
+Провести длительный тест на FP-30 по BLE и USB после decoder-fix: быстрые Note On/Off,
+аккорды, педаль и удержания. Затем откалибровать отдельные окна допуска BLE/USB.
+Подробный список оставшейся работы — в `docs/roadmap.md`.
