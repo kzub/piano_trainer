@@ -75,8 +75,19 @@ class MidiController(context: Context) {
     private var scanCallback: ScanCallback? = null
 
     var onStatus: (String) -> Unit = {}
+    var language: AppLanguage = AppLanguage.ENGLISH
     var onBluetoothDevice: (android.bluetooth.BluetoothDevice) -> Unit = {}
     var onNote: (pitch: Int, velocity: Int, pressed: Boolean) -> Unit = { _, _, _ -> }
+
+    /** Sends a synthetic event through the same UI callback as a physical MIDI key. */
+    fun injectDebugNote(pitch: Int, velocity: Int, pressed: Boolean) {
+        val safePitch = pitch.coerceIn(0, 127)
+        val safeVelocity = velocity.coerceIn(0, 127)
+        mainHandler.post {
+            onStatus(if (pressed) status("Test note $safePitch", "Тестовая нота $safePitch") else status("Test note $safePitch released", "Тестовая нота $safePitch отпущена"))
+            onNote(safePitch, safeVelocity, pressed)
+        }
+    }
 
     private val receiver = object : MidiReceiver() {
         override fun onSend(message: ByteArray, offset: Int, count: Int, timestamp: Long) {
@@ -84,14 +95,14 @@ class MidiController(context: Context) {
                 when (event) {
                     is IncomingMidiEvent.Note -> {
                         val text = if (event.pressed) {
-                            "Получена нота ${event.pitch} (velocity ${event.velocity})"
+                            status("Received note ${event.pitch} (velocity ${event.velocity})", "Получена нота ${event.pitch} (velocity ${event.velocity})")
                         } else {
-                            "Отпущена нота ${event.pitch}"
+                            status("Released note ${event.pitch}", "Отпущена нота ${event.pitch}")
                         }
                         mainHandler.post { onStatus(text); onNote(event.pitch, event.velocity, event.pressed) }
                     }
                     is IncomingMidiEvent.SustainPedal -> {
-                        mainHandler.post { onStatus(if (event.pressed) "Педаль нажата" else "Педаль отпущена") }
+                        mainHandler.post { onStatus(if (event.pressed) status("Pedal pressed", "Педаль нажата") else status("Pedal released", "Педаль отпущена")) }
                     }
                 }
             }
@@ -102,16 +113,16 @@ class MidiController(context: Context) {
         val properties = info.properties
         val name = properties.getString(MidiDeviceInfo.PROPERTY_NAME)
             ?: properties.getString(MidiDeviceInfo.PROPERTY_MANUFACTURER)
-            ?: "MIDI-устройство ${info.id}"
+            ?: status("MIDI device ${info.id}", "MIDI-устройство ${info.id}")
         MidiEndpoint(info, name)
     }
 
     fun open(endpoint: MidiEndpoint) {
         closeConnection()
-        onStatus("Подключение к ${endpoint.label}…")
+        onStatus(status("Connecting to ${endpoint.label}…", "Подключение к ${endpoint.label}…"))
         midiManager.openDevice(endpoint.info, { opened ->
             if (opened == null) {
-                onStatus("Не удалось открыть ${endpoint.label}")
+                onStatus(status("Could not open ${endpoint.label}", "Не удалось открыть ${endpoint.label}"))
             } else {
                 attach(opened, endpoint.label)
             }
@@ -121,20 +132,20 @@ class MidiController(context: Context) {
     fun scanBluetooth() {
         val activeScanner = scanner
         if (activeScanner == null || bluetoothAdapter?.isEnabled != true) {
-            onStatus("Включите Bluetooth на планшете")
+            onStatus(status("Turn on Bluetooth on this tablet", "Включите Bluetooth на планшете"))
             return
         }
         stopScan()
-        onStatus("Поиск Bluetooth MIDI…")
+        onStatus(status("Scanning for Bluetooth MIDI…", "Поиск Bluetooth MIDI…"))
         val filter = ScanFilter.Builder().setServiceUuid(ParcelUuid(MIDI_BLE_UUID)).build()
         scanCallback = object : ScanCallback() {
             override fun onScanResult(callbackType: Int, result: ScanResult) {
                 onBluetoothDevice(result.device)
-                onStatus("Найдено: ${result.device.name ?: "Bluetooth MIDI"}")
+                onStatus(status("Found: ${result.device.name ?: "Bluetooth MIDI"}", "Найдено: ${result.device.name ?: "Bluetooth MIDI"}"))
             }
 
             override fun onScanFailed(errorCode: Int) {
-                onStatus("Ошибка поиска Bluetooth MIDI: $errorCode")
+                onStatus(status("Bluetooth MIDI scan error: $errorCode", "Ошибка поиска Bluetooth MIDI: $errorCode"))
             }
         }
         activeScanner.startScan(listOf(filter), ScanSettings.Builder().build(), scanCallback)
@@ -143,9 +154,9 @@ class MidiController(context: Context) {
     fun openBluetooth(bluetoothDevice: android.bluetooth.BluetoothDevice) {
         stopScan()
         closeConnection()
-        onStatus("Подключение к ${bluetoothDevice.name ?: "FP-30"}…")
+        onStatus(status("Connecting to ${bluetoothDevice.name ?: "FP-30"}…", "Подключение к ${bluetoothDevice.name ?: "FP-30"}…"))
         midiManager.openBluetoothDevice(bluetoothDevice, { opened ->
-            if (opened == null) onStatus("Не удалось открыть Bluetooth MIDI")
+            if (opened == null) onStatus(status("Could not open Bluetooth MIDI", "Не удалось открыть Bluetooth MIDI"))
             else attach(opened, bluetoothDevice.name ?: "Bluetooth MIDI")
         }, mainHandler)
     }
@@ -174,21 +185,23 @@ class MidiController(context: Context) {
         outputPort = opened.openOutputPort(0)
         inputPort = opened.openInputPort(0)
         if (outputPort == null) {
-            onStatus("$name не имеет входящего MIDI-порта")
+            onStatus(status("$name has no MIDI input port", "$name не имеет входящего MIDI-порта"))
             return
         }
         outputPort?.connect(receiver)
-        onStatus("Подключено: $name. Нажмите клавишу на FP-30.")
+        onStatus(status("Connected: $name. Press a key on the FP-30.", "Подключено: $name. Нажмите клавишу на FP-30."))
     }
 
     fun send(message: ByteArray) {
         val port = inputPort ?: run {
-            onStatus("Для воспроизведения подключите MIDI-устройство")
+            onStatus(status("Connect a MIDI device for playback", "Для воспроизведения подключите MIDI-устройство"))
             return
         }
         runCatching { port.send(message, 0, message.size) }
-            .onFailure { onStatus("Ошибка отправки MIDI: ${it.message}") }
+            .onFailure { onStatus(status("MIDI send error: ${it.message}", "Ошибка отправки MIDI: ${it.message}")) }
     }
+
+    private fun status(english: String, russian: String) = if (language.isRussian) russian else english
 
     private companion object {
         val MIDI_BLE_UUID: UUID = UUID.fromString("03B80E5A-EDE8-4B33-A751-6CE34EC4C700")

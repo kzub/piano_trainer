@@ -109,6 +109,13 @@ class WaitingPractice(
 
     fun noteReleased(pitch: Int): PracticeState {
         held -= pitch
+        // Wrong notes are visualized only for as long as their keys are held.
+        // Correct notes remain accepted so a chord may still be entered one key
+        // at a time within the attempt window.
+        if (pitch !in groups.getOrNull(index)?.pitches.orEmpty()) {
+            attempted -= pitch
+            if (attempted.isEmpty()) attemptStartedAt = null
+        }
         return state()
     }
 

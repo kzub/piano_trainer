@@ -78,16 +78,18 @@ class TimelineHandInferenceTest {
             attemptWindowMillis = 250,
         )
 
-        practice.notePressed(61, 0)
-        practice.noteReleased(61)
+        val pressed = practice.notePressed(61, 0)
+        assertEquals(setOf(61), pressed.wrong)
+        val releasedImmediately = practice.noteReleased(61)
+        assertEquals(emptySet<Int>(), releasedImmediately.wrong)
         val cleared = practice.expireAttemptWindow(250)
 
-        assertEquals(emptySet<Int>(), cleared!!.wrong)
+        assertEquals(null, cleared)
 
         practice.notePressed(61, 300)
         val held = practice.expireAttemptWindow(550)
         assertEquals(setOf(61), held!!.wrong)
-        practice.noteReleased(61)
-        assertEquals(emptySet<Int>(), practice.expireAttemptWindow(800)!!.wrong)
+        assertEquals(emptySet<Int>(), practice.noteReleased(61).wrong)
+        assertEquals(null, practice.expireAttemptWindow(800))
     }
 }

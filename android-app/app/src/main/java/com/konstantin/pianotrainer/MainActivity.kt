@@ -66,9 +66,9 @@ import kotlin.math.roundToLong
 private enum class RangeSelectionMode { FROM, TO }
 
 private enum class PracticeHands(val label: String) {
-    BOTH("Обе"),
-    LEFT("Левая"),
-    RIGHT("Правая");
+    BOTH("Both"),
+    LEFT("Left"),
+    RIGHT("Right");
 
     fun select(group: ExpectedGroup): ExpectedGroup? {
         val selected = when (this) {
@@ -109,25 +109,38 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun PianoTrainerApp(repository: ScorePackageRepository) {
     val context = LocalContext.current
+    var language by remember { mutableStateOf(AppLanguage.load(context)) }
+    val strings = remember(language) { Strings(language) }
     val midiController = remember { MidiController(context.applicationContext) }
+    midiController.language = language
     var scores by remember { mutableStateOf(repository.list()) }
     var importError by remember { mutableStateOf<String?>(null) }
     var openedScore by remember { mutableStateOf<ScorePackage?>(null) }
     var scoreToDelete by remember { mutableStateOf<ScorePackage?>(null) }
     var showMidiSettings by remember { mutableStateOf(false) }
-    DisposableEffect(midiController) { onDispose { midiController.close() } }
+    DisposableEffect(midiController) {
+        if (BuildConfig.DEBUG) {
+            DebugMidiInput.onNote = { pitch, velocity, pressed ->
+                midiController.injectDebugNote(pitch, velocity, pressed)
+            }
+        }
+        onDispose {
+            if (BuildConfig.DEBUG) DebugMidiInput.onNote = null
+            midiController.close()
+        }
+    }
     val importer = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
         runCatching { repository.import(uri) }
             .onSuccess { scores = repository.list(); importError = null }
-            .onFailure { importError = it.message ?: "Не удалось импортировать партитуру" }
+            .onFailure { importError = it.message ?: strings.text("Could not import score", "Не удалось импортировать партитуру") }
     }
     Surface(modifier = Modifier.fillMaxSize(), color = Color(0xFFF7F5F0)) {
         Box(Modifier.fillMaxSize().padding(WindowInsets.safeDrawing.asPaddingValues())) {
             if (showMidiSettings) {
-                MidiSettingsScreen(controller = midiController, onBack = { showMidiSettings = false })
+                MidiSettingsScreen(controller = midiController, strings = strings, onBack = { showMidiSettings = false })
             } else if (openedScore != null) {
-                ScoreScreen(score = openedScore!!, repository = repository, controller = midiController, onBack = { openedScore = null })
+                ScoreScreen(score = openedScore!!, repository = repository, controller = midiController, strings = strings, onBack = { openedScore = null })
             } else {
                 Column(modifier = Modifier.fillMaxSize()) {
                     Row(
@@ -139,15 +152,21 @@ private fun PianoTrainerApp(repository: ScorePackageRepository) {
                             Text("Piano Trainer", color = Color.White, style = MaterialTheme.typography.headlineSmall)
                             Text("v${BuildConfig.VERSION_NAME}", color = Color(0xFFB8C7D9), style = MaterialTheme.typography.labelSmall)
                         }
-                        Button(onClick = { showMidiSettings = true }) { Text("MIDI") }
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(onClick = {
+                                language = if (language == AppLanguage.ENGLISH) AppLanguage.RUSSIAN else AppLanguage.ENGLISH
+                                AppLanguage.save(context, language)
+                            }) { Text(language.toggleLabel) }
+                            Button(onClick = { showMidiSettings = true }) { Text("MIDI") }
+                        }
                     }
                     if (scores.isEmpty()) {
                         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                             Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                                Text("Библиотека пока пуста", style = MaterialTheme.typography.headlineSmall)
-                                Text("Импортируйте подготовленный файл .pianoscore")
+                                Text(strings.text("Your library is empty", "Библиотека пока пуста"), style = MaterialTheme.typography.headlineSmall)
+                                Text(strings.text("Import a prepared .pianoscore file", "Импортируйте подготовленный файл .pianoscore"))
                                 Button(onClick = { importer.launch(arrayOf("application/zip", "application/octet-stream", "*/*")) }) {
-                                    Text("Импортировать партитуру")
+                                    Text(strings.text("Import score", "Импортировать партитуру"))
                                 }
                                 importError?.let { Text(it, color = Color(0xFFB3261E)) }
                             }
@@ -155,7 +174,7 @@ private fun PianoTrainerApp(repository: ScorePackageRepository) {
                     } else {
                         Column(modifier = Modifier.fillMaxSize().padding(20.dp)) {
                             Button(onClick = { importer.launch(arrayOf("application/zip", "application/octet-stream", "*/*")) }) {
-                                Text("Импортировать")
+                                Text(strings.text("Import", "Импортировать"))
                             }
                             Spacer(Modifier.height(14.dp))
                             LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -169,13 +188,13 @@ private fun PianoTrainerApp(repository: ScorePackageRepository) {
                                             Column(Modifier.weight(1f).clickable { openedScore = score }) {
                                                 Text(score.title, style = MaterialTheme.typography.titleLarge)
                                                 Text(
-                                                    if (score.normalPages.isEmpty()) "Нужны SVG-страницы" else "${score.normalPages.size} стр.",
+                                                    if (score.normalPages.isEmpty()) strings.noPages() else strings.pages(score.normalPages.size),
                                                     color = Color(0xFF4A6178),
                                                 )
                                             }
                                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                                Button(onClick = { openedScore = score }) { Text("Открыть") }
-                                                Button(onClick = { scoreToDelete = score }) { Text("Удалить") }
+                                                Button(onClick = { openedScore = score }) { Text(strings.text("Open", "Открыть")) }
+                                                Button(onClick = { scoreToDelete = score }) { Text(strings.text("Delete", "Удалить")) }
                                             }
                                         }
                                     }
@@ -191,24 +210,24 @@ private fun PianoTrainerApp(repository: ScorePackageRepository) {
     scoreToDelete?.let { score ->
         AlertDialog(
             onDismissRequest = { scoreToDelete = null },
-            title = { Text("Удалить партитуру?") },
-            text = { Text("«${score.title}» будет удалена с планшета. Исходный файл на Mac не изменится.") },
+            title = { Text(strings.text("Delete score?", "Удалить партитуру?")) },
+            text = { Text(strings.scoreDeleted(score.title)) },
             confirmButton = {
                 Button(onClick = {
                     runCatching { repository.delete(score) }
                         .onSuccess { scores = repository.list(); importError = null }
-                        .onFailure { importError = it.message ?: "Не удалось удалить партитуру" }
+                        .onFailure { importError = it.message ?: strings.text("Could not delete score", "Не удалось удалить партитуру") }
                     scoreToDelete = null
-                }) { Text("Удалить") }
+                }) { Text(strings.text("Delete", "Удалить")) }
             },
-            dismissButton = { Button(onClick = { scoreToDelete = null }) { Text("Отмена") } },
+            dismissButton = { Button(onClick = { scoreToDelete = null }) { Text(strings.text("Cancel", "Отмена")) } },
         )
     }
 }
 
 @Composable
-private fun MidiSettingsScreen(controller: MidiController, onBack: () -> Unit) {
-    var status by remember { mutableStateOf("MIDI не подключено") }
+private fun MidiSettingsScreen(controller: MidiController, strings: Strings, onBack: () -> Unit) {
+    var status by remember(strings) { mutableStateOf(strings.text("MIDI not connected", "MIDI не подключено")) }
     var endpoints by remember { mutableStateOf(controller.systemDevices()) }
     var bluetoothDevices by remember { mutableStateOf<List<android.bluetooth.BluetoothDevice>>(emptyList()) }
     controller.onStatus = { status = it }
@@ -218,9 +237,9 @@ private fun MidiSettingsScreen(controller: MidiController, onBack: () -> Unit) {
     val permissions = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
         if (result.values.all { it }) {
             endpoints = controller.systemDevices()
-            status = "Разрешения получены. Выберите USB MIDI или начните поиск Bluetooth MIDI."
+            status = strings.text("Permissions granted. Select USB MIDI or start a Bluetooth MIDI scan.", "Разрешения получены. Выберите USB MIDI или начните поиск Bluetooth MIDI.")
         } else {
-            status = "Для Bluetooth MIDI нужны разрешения «Устройства поблизости»"
+            status = strings.text("Bluetooth MIDI requires Nearby devices permissions", "Для Bluetooth MIDI нужны разрешения «Устройства поблизости»")
         }
     }
     val hasBluetoothPermissions = contextHasBluetoothPermissions()
@@ -230,9 +249,9 @@ private fun MidiSettingsScreen(controller: MidiController, onBack: () -> Unit) {
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
-            Button(onClick = onBack) { Text("Назад") }
+            Button(onClick = onBack) { Text(strings.text("Back", "Назад")) }
             Text("MIDI", color = Color.White, style = MaterialTheme.typography.titleLarge)
-            Button(onClick = { controller.closeConnection(); status = "MIDI отключено" }) { Text("Отключить") }
+            Button(onClick = { controller.closeConnection(); status = strings.text("MIDI disconnected", "MIDI отключено") }) { Text(strings.text("Disconnect", "Отключить")) }
         }
         Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text(status, style = MaterialTheme.typography.bodyLarge)
@@ -244,18 +263,18 @@ private fun MidiSettingsScreen(controller: MidiController, onBack: () -> Unit) {
                     } else {
                         permissions.launch(arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT))
                     }
-                }) { Text(if (hasBluetoothPermissions) "Искать Bluetooth MIDI" else "Разрешить Bluetooth") }
-                Button(onClick = { endpoints = controller.systemDevices() }) { Text("Обновить USB MIDI") }
+                }) { Text(if (hasBluetoothPermissions) strings.text("Scan Bluetooth MIDI", "Искать Bluetooth MIDI") else strings.text("Allow Bluetooth", "Разрешить Bluetooth")) }
+                Button(onClick = { endpoints = controller.systemDevices() }) { Text(strings.text("Refresh USB MIDI", "Обновить USB MIDI")) }
             }
             Text("Bluetooth MIDI", style = MaterialTheme.typography.titleMedium)
-            if (bluetoothDevices.isEmpty()) Text("Нажмите «Искать Bluetooth MIDI», затем включите на FP‑30 режим Bluetooth MIDI.")
+            if (bluetoothDevices.isEmpty()) Text(strings.text("Tap “Scan Bluetooth MIDI”, then enable Bluetooth MIDI mode on the FP‑30.", "Нажмите «Искать Bluetooth MIDI», затем включите на FP‑30 режим Bluetooth MIDI."))
             bluetoothDevices.forEach { device ->
                 Card(Modifier.fillMaxWidth().clickable { controller.openBluetooth(device) }) {
                     Text(device.name ?: "Bluetooth MIDI", Modifier.padding(16.dp))
                 }
             }
-            Text("Системные USB / MIDI-устройства", style = MaterialTheme.typography.titleMedium)
-            if (endpoints.isEmpty()) Text("USB MIDI-устройства не обнаружены")
+            Text(strings.text("System USB / MIDI devices", "Системные USB / MIDI-устройства"), style = MaterialTheme.typography.titleMedium)
+            if (endpoints.isEmpty()) Text(strings.text("No USB MIDI devices found", "USB MIDI-устройства не обнаружены"))
             endpoints.forEach { endpoint ->
                 Card(Modifier.fillMaxWidth().clickable { controller.open(endpoint) }) {
                     Text(endpoint.label, Modifier.padding(16.dp))
@@ -273,7 +292,7 @@ private fun contextHasBluetoothPermissions(): Boolean {
 }
 
 @Composable
-private fun ScoreScreen(score: ScorePackage, repository: ScorePackageRepository, controller: MidiController, onBack: () -> Unit) {
+private fun ScoreScreen(score: ScorePackage, repository: ScorePackageRepository, controller: MidiController, strings: Strings, onBack: () -> Unit) {
     var page by remember { mutableStateOf(0) }
     var playing by remember { mutableStateOf(false) }
     var playbackError by remember { mutableStateOf<String?>(null) }
@@ -314,17 +333,16 @@ private fun ScoreScreen(score: ScorePackage, repository: ScorePackageRepository,
     }
     val timeline = practiceData.getOrNull()
     val cursorTick = practiceState?.currentTick ?: playbackState?.tick
-    val cursorGroup = when {
+    val fullCursorGroup = when {
         practiceState?.currentTick != null -> timeline?.groups
             ?.firstOrNull { it.tick == practiceState?.currentTick }
-            ?.let(practiceHands::select)
         playbackState != null -> timeline?.groups
             ?.asSequence()
             ?.filter { it.tick <= playbackState!!.tick }
-            ?.mapNotNull(practiceHands::select)
             ?.lastOrNull()
         else -> null
     }
+    val cursorGroup = fullCursorGroup?.let(practiceHands::select)
     val cursorMeasure = cursorGroup?.measure ?: cursorTick?.let { tick -> timeline?.measureAt(tick)?.number }
     val cursorMeasureInfo = cursorMeasure?.let { number -> timeline?.measures?.firstOrNull { it.number == number } }
     LaunchedEffect(cursorMeasure) {
@@ -339,7 +357,7 @@ private fun ScoreScreen(score: ScorePackage, repository: ScorePackageRepository,
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
-            Button(onClick = onBack) { Text("Библиотека") }
+            Button(onClick = onBack) { Text(strings.text("Library", "Библиотека")) }
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(score.title, color = Color.White, style = MaterialTheme.typography.titleMedium)
                 Text("v${BuildConfig.VERSION_NAME}", color = Color(0xFFB8C7D9), style = MaterialTheme.typography.labelSmall)
@@ -349,12 +367,12 @@ private fun ScoreScreen(score: ScorePackage, repository: ScorePackageRepository,
                     onClick = { rangeSelectionMode = if (rangeSelectionMode == RangeSelectionMode.FROM) null else RangeSelectionMode.FROM },
                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = if (rangeSelectionMode == RangeSelectionMode.FROM) Color(0xFFE0A800) else Color(0xFF6750A4)),
-                ) { Text("От") }
+                ) { Text(strings.text("From", "От")) }
                 Button(
                     onClick = { rangeSelectionMode = if (rangeSelectionMode == RangeSelectionMode.TO) null else RangeSelectionMode.TO },
                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = if (rangeSelectionMode == RangeSelectionMode.TO) Color(0xFFE0A800) else Color(0xFF6750A4)),
-                ) { Text("До") }
+                ) { Text(strings.text("To", "До")) }
                 Button(
                     onClick = {
                         selectedFromTick = null
@@ -367,16 +385,20 @@ private fun ScoreScreen(score: ScorePackage, repository: ScorePackageRepository,
                     },
                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
                     enabled = selectedFromTick != null || selectedToTick != null,
-                ) { Text("Сброс") }
+                ) { Text(strings.text("Reset", "Сброс")) }
                 Box {
                     Button(
                         onClick = { handMenuExpanded = true },
                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                    ) { Text(practiceHands.label) }
+                    ) { Text(if (practiceHands == PracticeHands.BOTH) strings.text("Both", "Обе") else if (practiceHands == PracticeHands.LEFT) strings.text("Left", "Левая") else strings.text("Right", "Правая")) }
                     DropdownMenu(expanded = handMenuExpanded, onDismissRequest = { handMenuExpanded = false }) {
                         PracticeHands.entries.forEach { mode ->
                             DropdownMenuItem(
-                                text = { Text(if (mode == PracticeHands.BOTH) "Обе руки" else "${mode.label} рука") },
+                                text = { Text(when (mode) {
+                                    PracticeHands.BOTH -> strings.text("Both hands", "Обе руки")
+                                    PracticeHands.LEFT -> strings.text("Left hand", "Левая рука")
+                                    PracticeHands.RIGHT -> strings.text("Right hand", "Правая рука")
+                                }) },
                                 onClick = {
                                     practiceHands = mode
                                     handMenuExpanded = false
@@ -423,7 +445,7 @@ private fun ScoreScreen(score: ScorePackage, repository: ScorePackageRepository,
                             }
                             .mapNotNull(practiceHands::select)
                             .toList()
-                        require(selected.isNotEmpty()) { "В выбранных тактах нет нот для обучения" }
+                        require(selected.isNotEmpty()) { strings.text("There are no notes to practise in the selected measures", "В выбранных тактах нет нот для обучения") }
                         WaitingPractice(selected)
                     }.onSuccess { engine ->
                         practice = engine
@@ -436,8 +458,8 @@ private fun ScoreScreen(score: ScorePackage, repository: ScorePackageRepository,
                         page = repository.pageForMeasure(score, initialMeasure) ?: 0
                         playbackError = null
                     }
-                        .onFailure { playbackError = it.message ?: "Не удалось запустить обучение" }
-                }) { Text(if (practice == null) "Учить" else "Заново") }
+                        .onFailure { playbackError = it.message ?: strings.text("Could not start practice", "Не удалось запустить обучение") }
+                }) { Text(if (practice == null) strings.text("Practise", "Учить") else strings.text("Restart", "Заново")) }
                 Button(onClick = {
                     if (playing) {
                         playback.stop()
@@ -459,7 +481,7 @@ private fun ScoreScreen(score: ScorePackage, repository: ScorePackageRepository,
                                 }
                                 .mapNotNull(practiceHands::select)
                                 .toList()
-                            require(selectedGroups.isNotEmpty()) { "В выбранном интервале нет нот для оценки" }
+                            require(selectedGroups.isNotEmpty()) { strings.text("There are no notes to assess in the selected range", "В выбранном интервале нет нот для оценки") }
                             continuousFeedback = ContinuousFeedback(selectedGroups, toleranceTicks = practicePpq / 2L)
                             feedbackState = continuousFeedback!!.playbackTick(selectedFromTick ?: 0L)
                             val untilTick = selectedToTick?.let { end -> groups.firstOrNull { it.tick > end }?.tick }
@@ -484,10 +506,10 @@ private fun ScoreScreen(score: ScorePackage, repository: ScorePackageRepository,
                                 },
                             )
                         }.onSuccess { playing = true; playbackError = null }
-                            .onFailure { playbackError = it.message ?: "Не удалось запустить MIDI" }
+                            .onFailure { playbackError = it.message ?: strings.text("Could not start MIDI playback", "Не удалось запустить MIDI") }
                     }
-                }) { Text(if (playing) "Стоп" else "Play") }
-                Text(if (hasPages) "${page + 1}/${score.normalPages.size}" else "нет страниц", color = Color(0xFFB8C7D9))
+                }) { Text(if (playing) strings.text("Stop", "Стоп") else strings.text("Play", "Играть")) }
+                Text(if (hasPages) strings.pageCounter(page, score.normalPages.size) else strings.text("no pages", "нет страниц"), color = Color(0xFFB8C7D9))
             }
         }
         if (hasPages) {
@@ -546,14 +568,18 @@ private fun ScoreScreen(score: ScorePackage, repository: ScorePackageRepository,
                     }
                     val expected = displayedNotes.joinToString(",")
                     val accepted = acceptedNotes.joinToString(",")
-                    val attempted = visibleLearningState?.attempted?.joinToString(",").orEmpty()
+                    // Only currently held mistakes get synthetic red noteheads.
+                    // Expected notes are already coloured on the original score.
+                    val wrong = visibleLearningState?.wrong?.joinToString(",").orEmpty()
                     val tickInMeasure = cursorTick?.let { tick -> cursorMeasureInfo?.let { tick - it.startTick } } ?: 0L
                     val measureTicks = cursorMeasureInfo?.durationTicks ?: practicePpq * 4L
                     val alignCursorToExpected = practiceState != null
                     val occurrences = emptyMap<Int, Int>()
                     val occurrenceScript = occurrences.entries.joinToString(",", prefix = "{", postfix = "}") { (pitch, occurrence) -> "\"$pitch\":$occurrence" }
                     val scoreIds = cursorGroup?.scoreNoteIds.orEmpty().joinToString(",") { "'${it}'" }
-                    val cursorScript = if (cursorMeasure == null) "document.querySelectorAll('.note').forEach(n=>colorNote(n,'black'));clearPracticeCursor()" else "highlightNotes($cursorMeasure,[$expected],[$accepted],[$attempted],$tickInMeasure,$measureTicks,$alignCursorToExpected,$occurrenceScript,[$scoreIds])"
+                    val nativePitches = fullCursorGroup?.pitches.orEmpty().joinToString(",")
+                    val nativeScoreIds = fullCursorGroup?.scoreNoteIds.orEmpty().joinToString(",") { "'${it}'" }
+                    val cursorScript = if (cursorMeasure == null) "document.querySelectorAll('.note').forEach(n=>colorNote(n,'black'));clearPracticeCursor()" else "highlightNotes($cursorMeasure,[$expected],[$accepted],[$wrong],$tickInMeasure,$measureTicks,$alignCursorToExpected,$occurrenceScript,[$scoreIds],[$nativePitches],[$nativeScoreIds])"
                     val fromTickScript = selectedFromTick?.toString() ?: "null"
                     val toTickScript = selectedToTick?.toString() ?: "null"
                     val modeScript = rangeSelectionMode?.name?.lowercase() ?: ""
@@ -570,14 +596,18 @@ function clearPracticeCursor(){document.querySelectorAll('.practice-cursor,.wron
 function svgEl(name){return document.createElementNS('http://www.w3.org/2000/svg',name)}
 function visualSelection(primary,measures,expected,timedFraction,occurrences,scoreIds){const exact=new Set(scoreIds||[]);if(exact.size){const selected=[...document.querySelectorAll('[data-id]')].filter(n=>exact.has(n.dataset.id||'')).map(n=>{const r=n.getBoundingClientRect();return {note:n,measure:primary,pitch:null,clientX:r.left+r.width/2,exact:true}});const xs=selected.map(e=>e.clientX).sort((a,b)=>a-b);return {clientX:xs.length?xs[Math.floor(xs.length/2)]:null,notes:selected}}const entries=noteEntries(measures).map(e=>{const r=(e.note.querySelector('.notehead')||e.note).getBoundingClientRect();return {...e,clientX:r.left+r.width/2}});const measureRect=primary.getBoundingClientRect();const roughX=measureRect.left+measureRect.width*timedFraction;const candidates=entries.filter(e=>expected.includes(e.pitch));if(!candidates.length)return {clientX:null,notes:[]};const anchor=candidates.reduce((best,e)=>Math.abs(e.clientX-roughX)<Math.abs(best.clientX-roughX)?e:best);const selected=[];[...new Set(expected)].forEach(pitch=>{const matching=candidates.filter(e=>e.pitch===pitch).sort((a,b)=>a.clientX-b.clientX);if(!matching.length)return;const occurrence=occurrences&&Number.isInteger(occurrences[pitch])?occurrences[pitch]:-1;selected.push(occurrence>=0&&occurrence<matching.length?matching[occurrence]:matching.reduce((best,e)=>Math.abs(e.clientX-anchor.clientX)<Math.abs(best.clientX-anchor.clientX)?e:best))});const sorted=selected.map(e=>e.clientX).sort((a,b)=>a-b);return {clientX:sorted[Math.floor(sorted.length/2)]||anchor.clientX,notes:selected}}
 function drawPracticeCursor(m,tickInMeasure,measureTicks,selection,alignExpected){clearPracticeCursor();const measureBox=m.getBBox();const parent=m.parentNode;const shade=svgEl('rect');shade.setAttribute('class','practice-cursor');shade.setAttribute('x',measureBox.x);shade.setAttribute('y',measureBox.y);shade.setAttribute('width',measureBox.width);shade.setAttribute('height',measureBox.height);shade.setAttribute('fill','#1976d2');shade.setAttribute('opacity','0.10');parent.insertBefore(shade,m);const timedFraction=Math.max(0,Math.min(1,tickInMeasure/measureTicks));const timedX=measureBox.x+measureBox.width*timedFraction;const measureRect=m.getBoundingClientRect();const alignedX=selection.clientX===null?null:screenPointIn(parent,selection.clientX,measureRect.top+measureRect.height/2).x;const x=alignExpected&&alignedX!==null?alignedX:timedX;const line=svgEl('line');line.setAttribute('class','practice-cursor');line.setAttribute('x1',x);line.setAttribute('x2',x);line.setAttribute('y1',measureBox.y);line.setAttribute('y2',measureBox.y+measureBox.height);line.setAttribute('stroke','#d81b60');line.setAttribute('stroke-width','14');line.setAttribute('opacity','0.9');parent.appendChild(line);return {x:x,parent:parent,line:line}}
-function screenPointIn(parent,x,y){const svg=parent.ownerSVGElement;const point=svg.createSVGPoint();point.x=x;point.y=y;return point.matrixTransform(parent.getScreenCTM().inverse())}
+function screenPointIn(parent,x,y){const svg=parent.ownerSVGElement||parent;const point=svg.createSVGPoint();point.x=x;point.y=y;return point.matrixTransform(parent.getScreenCTM().inverse())}
 function staffPositionForPitch(p){const degree=[0,0,1,1,2,3,3,4,4,5,5,6][((p%12)+12)%12];return (Math.floor(p/12)-1)*7+degree}
-function noteEntries(measures){return measures.flatMap(m=>[...m.querySelectorAll('.note')].filter(n=>Number.isFinite(midiPitch(n))).map(n=>({note:n,measure:m,pitch:midiPitch(n)})))}
+function noteEntries(measures){return measures.flatMap(m=>[...m.querySelectorAll('.note')].filter(n=>Number.isFinite(midiPitch(n))).map(n=>({note:n,measure:m,staff:n.closest('.staff'),pitch:midiPitch(n)})))}
 let lastVisualDiagnostic='';
 function reportVisualDiagnostic(measure,tickInMeasure,measureTicks,expected,selection){const svg=document.querySelector('svg');const box=svg&&svg.viewBox?svg.viewBox.baseVal:null;const notes=selection.notes.map(e=>{const staff=e.note.closest('.staff');return {pitch:e.pitch,noteId:e.note.dataset.id||'',measureId:e.measure.dataset.id||'',measure:e.measure.dataset.n||'',staffId:staff&&staff.dataset?staff.dataset.id||'':''}});const diagnostic=JSON.stringify({measure:measure,tickInMeasure:tickInMeasure,measureTicks:measureTicks,expected:expected,selected:notes,viewport:{width:innerWidth,height:innerHeight},viewBox:box?{width:box.width,height:box.height}:null});if(diagnostic!==lastVisualDiagnostic){lastVisualDiagnostic=diagnostic;PianoTrainerBridge.reportVisualDiagnostic(diagnostic)}}
-function markerGeometry(entry,pitch,clientX){const parent=entry.measure.parentNode;const rect=(entry.note.querySelector('.notehead')||entry.note).getBoundingClientRect();const center=screenPointIn(parent,rect.left+rect.width/2,rect.top+rect.height/2);const xEdge=screenPointIn(parent,rect.left+rect.width,rect.top+rect.height/2);const yEdge=screenPointIn(parent,rect.left+rect.width/2,rect.top+rect.height);const entries=[...entry.measure.querySelectorAll('.note')].filter(n=>Number.isFinite(midiPitch(n))).map(n=>{const r=(n.querySelector('.notehead')||n).getBoundingClientRect();return {pitch:midiPitch(n),position:staffPositionForPitch(midiPitch(n)),y:screenPointIn(parent,r.left+r.width/2,r.top+r.height/2).y}});const ratios=[];entries.forEach(a=>entries.forEach(b=>{const steps=Math.abs(staffPositionForPitch(a.pitch)-staffPositionForPitch(b.pitch));if(steps>0)ratios.push(Math.abs(a.y-b.y)/steps)}));ratios.sort((a,b)=>a-b);const staffStep=ratios.length?ratios[Math.floor(ratios.length/2)]:Math.max(70,Math.abs(yEdge.y-center.y)*1.4);return {parent:parent,x:screenPointIn(parent,clientX,rect.top+rect.height/2).x,y:center.y+(staffPositionForPitch(entry.pitch)-staffPositionForPitch(pitch))*staffStep,rx:Math.max(85,Math.abs(xEdge.x-center.x)*1.1),ry:Math.max(60,Math.abs(yEdge.y-center.y)*0.8)}}
-function drawAttemptNotes(measures,attempted,expected,cursor){if(!attempted.length)return;const entries=noteEntries(measures);if(!entries.length)return;attempted.forEach(pitch=>{const reference=entries.reduce((best,n)=>Math.abs(n.pitch-pitch)<Math.abs(best.pitch-pitch)?n:best);const g=markerGeometry(reference,pitch,cursor.clientX);const correct=expected.includes(pitch);const marker=svgEl('ellipse');marker.setAttribute('class','wrong-note-marker');marker.setAttribute('cx',g.x);marker.setAttribute('cy',g.y);marker.setAttribute('rx',g.rx);marker.setAttribute('ry',g.ry);marker.setAttribute('fill',correct?'#16833b':'#d01818');marker.setAttribute('stroke',correct?'#0f5f29':'#8b0000');marker.setAttribute('stroke-width','12');marker.setAttribute('transform','rotate(-18 '+g.x+' '+g.y+')');g.parent.appendChild(marker)})}
-function highlightNotes(measure,expected,accepted,attempted,tickInMeasure,measureTicks,alignExpected,occurrences,scoreIds){document.querySelectorAll('.note').forEach(n=>colorNote(n,'black'));const measures=[...document.querySelectorAll('.measure[data-n="'+measure+'"]')];if(!measures.length){clearPracticeCursor();return}const timedFraction=Math.max(0,Math.min(1,tickInMeasure/measureTicks));const selection=visualSelection(measures[0],measures,expected,timedFraction,occurrences,scoreIds);reportVisualDiagnostic(measure,tickInMeasure,measureTicks,expected,selection);const cursor=drawPracticeCursor(measures[0],tickInMeasure,measureTicks,selection,alignExpected);const lineRect=cursor.line.getBoundingClientRect();cursor.clientX=lineRect.left+lineRect.width/2;const exactAccepted=expected.length>0&&expected.every(p=>accepted.includes(p));selection.notes.forEach(e=>colorNote(e.note,e.exact?(exactAccepted?'#16833b':'#1565c0'):(accepted.includes(e.pitch)?'#16833b':'#1565c0')));drawAttemptNotes(measures,attempted,expected,cursor)}
+function median(values,fallback){if(!values.length)return fallback;const sorted=values.slice().sort((a,b)=>a-b);return sorted[Math.floor(sorted.length/2)]}
+function markerGeometry(entry,pitch,cursor){const parent=entry.measure.parentNode;const noteHead=entry.note.querySelector('.notehead')||entry.note;const rect=noteHead.getBoundingClientRect();const center=screenPointIn(parent,rect.left+rect.width/2,rect.top+rect.height/2);const staff=entry.staff;const lineYs=staff?[...staff.querySelectorAll(':scope > path')].map(line=>{const r=line.getBoundingClientRect();return screenPointIn(parent,r.left+r.width/2,r.top+r.height/2).y}):[];const sortedLines=lineYs.slice().sort((a,b)=>a-b);const steps=sortedLines.slice(1).map((y,index)=>Math.abs(y-sortedLines[index]));const staffStep=median(steps,Math.max(70,rect.height*0.6));const systemBox=parent.getBBox();const rawY=center.y-(staffPositionForPitch(pitch)-staffPositionForPitch(entry.pitch))*staffStep;const y=Math.max(systemBox.y+staffStep,Math.min(systemBox.y+systemBox.height-staffStep,rawY));return {parent:parent,x:cursor.x,y:y,rx:staffStep*0.95,ry:staffStep*0.65}}
+function nativeEntries(pitches,scoreIds){const ids=new Set(scoreIds||[]);if(!ids.size)return[];const root=document.querySelector('svg');const notes=[...document.querySelectorAll('[data-id]')].filter(note=>ids.has(note.dataset.id||'')&&note.classList.contains('Note'));const sortedNotes=notes.map(note=>{const r=note.getBoundingClientRect();const center=screenPointIn(root,r.left+r.width/2,r.top+r.height/2);return {note:note,x:center.x,y:center.y}}).sort((a,b)=>a.y-b.y);const sortedPitches=[...new Set(pitches||[])].sort((a,b)=>b-a);return sortedPitches.slice(0,sortedNotes.length).map((pitch,index)=>({...sortedNotes[index],pitch:pitch,root:root}))}
+function nativeStaves(root){const lines=[...root.querySelectorAll('.StaffLines')].map(line=>{const r=line.getBoundingClientRect();return screenPointIn(root,r.left+r.width/2,r.top+r.height/2).y}).sort((a,b)=>a-b);if(lines.length<5)return[];const diffs=lines.slice(1).map((y,index)=>y-lines[index]).filter(value=>value>0);const step=Math.min(...diffs);const groups=[];lines.forEach(y=>{const group=groups[groups.length-1];if(!group||y-group[group.length-1]>step*1.8)groups.push([y]);else group.push(y)});return groups.filter(group=>group.length>=4).map(group=>({center:median(group,0),step:median(group.slice(1).map((y,index)=>y-group[index]),step)}))}
+function drawNativeWrongNotes(wrong,cursor,pitches,scoreIds){const entries=nativeEntries(pitches,scoreIds);if(!entries.length)return false;const root=entries[0].root;const staves=nativeStaves(root);wrong.forEach(pitch=>{const reference=entries.reduce((best,entry)=>Math.abs(entry.pitch-pitch)<Math.abs(best.pitch-pitch)?entry:best);const staff=staves.reduce((best,entry)=>Math.abs(entry.center-reference.y)<Math.abs(best.center-reference.y)?entry:best,staves[0]||{step:Math.max(1,reference.note.getBoundingClientRect().height)});const diatonicStep=staff.step/2;const y=reference.y-(staffPositionForPitch(pitch)-staffPositionForPitch(reference.pitch))*diatonicStep;const lineRect=cursor.line.getBoundingClientRect();const x=screenPointIn(root,lineRect.left+lineRect.width/2,lineRect.top+lineRect.height/2).x;const marker=reference.note.cloneNode(true);marker.removeAttribute('data-id');marker.removeAttribute('data-segment-id');marker.setAttribute('class','wrong-note-marker Note');const matrix=(reference.note.getAttribute('transform')||'').match(/matrix\\(([^)]+)\\)/);if(matrix){const values=matrix[1].split(/[ ,]+/).map(Number);if(values.length===6){values[4]+=x-reference.x;values[5]+=y-reference.y;marker.setAttribute('transform','matrix('+values.join(',')+')')}}else marker.setAttribute('transform',(reference.note.getAttribute('transform')||'')+' translate('+(x-reference.x)+' '+(y-reference.y)+')');marker.style.setProperty('fill','#d01818','important');marker.style.setProperty('stroke','#8b0000','important');marker.style.setProperty('stroke-width','inherit','important');marker.style.setProperty('color','#d01818','important');marker.style.setProperty('pointer-events','none');root.appendChild(marker)});return true}
+function drawWrongNotes(measures,wrong,cursor,nativePitches,nativeScoreIds){if(!wrong.length)return;if(drawNativeWrongNotes(wrong,cursor,nativePitches,nativeScoreIds))return;const entries=noteEntries(measures);if(!entries.length)return;wrong.forEach(pitch=>{const reference=entries.reduce((best,n)=>Math.abs(n.pitch-pitch)<Math.abs(best.pitch-pitch)?n:best);const g=markerGeometry(reference,pitch,cursor);const marker=svgEl('ellipse');marker.setAttribute('class','wrong-note-marker');marker.setAttribute('cx',g.x);marker.setAttribute('cy',g.y);marker.setAttribute('rx',g.rx);marker.setAttribute('ry',g.ry);marker.setAttribute('transform','rotate(-18 '+g.x+' '+g.y+')');marker.style.setProperty('fill','#d01818','important');marker.style.setProperty('stroke','#8b0000','important');marker.style.setProperty('stroke-width','18','important');marker.style.setProperty('color','#d01818','important');marker.style.setProperty('pointer-events','none');g.parent.appendChild(marker)})}
+function highlightNotes(measure,expected,accepted,wrong,tickInMeasure,measureTicks,alignExpected,occurrences,scoreIds,nativePitches,nativeScoreIds){document.querySelectorAll('.note').forEach(n=>colorNote(n,'black'));const measures=[...document.querySelectorAll('.measure[data-n="'+measure+'"]')];if(!measures.length){clearPracticeCursor();return}const timedFraction=Math.max(0,Math.min(1,tickInMeasure/measureTicks));const selection=visualSelection(measures[0],measures,expected,timedFraction,occurrences,scoreIds);reportVisualDiagnostic(measure,tickInMeasure,measureTicks,expected,selection);const cursor=drawPracticeCursor(measures[0],tickInMeasure,measureTicks,selection,alignExpected);const exactAccepted=expected.length>0&&expected.every(p=>accepted.includes(p));selection.notes.forEach(e=>colorNote(e.note,e.exact?(exactAccepted?'#16833b':'#1565c0'):(accepted.includes(e.pitch)?'#16833b':'#1565c0')));drawWrongNotes(measures,wrong,cursor,nativePitches,nativeScoreIds)}
 let rangeSelectionMode='';
 function setRangeSelectionMode(mode){rangeSelectionMode=mode;document.body.style.cursor=mode?'crosshair':'default'}
 function showSelectedRange(fromTick,toTick,measureMap){document.querySelectorAll('.range-highlight').forEach(e=>e.remove());if(fromTick===null&&toTick===null)return;const from=fromTick===null?0:fromTick;const to=toTick===null?Number.MAX_SAFE_INTEGER:toTick;document.querySelectorAll('.measure[data-n]').forEach(m=>{const info=(measureMap||[]).find(x=>x.n===parseInt(m.dataset.n));if(!info)return;const start=info.s,end=start+info.d,left=Math.max(start,from),right=Math.min(end,to);if(right<left||right<start||left>end)return;const box=m.getBBox(),parent=m.parentNode;const x1=box.x+box.width*Math.max(0,(left-start)/info.d);const x2=box.x+box.width*Math.min(1,(right-start)/info.d);const shade=svgEl('rect');shade.setAttribute('class','range-highlight');shade.setAttribute('x',x1);shade.setAttribute('y',box.y);shade.setAttribute('width',Math.max(18,x2-x1));shade.setAttribute('height',box.height);shade.setAttribute('fill','#687078');shade.setAttribute('opacity','0.16');parent.insertBefore(shade,m)})}
@@ -595,7 +625,7 @@ addEventListener('resize',fitScorePage);cropScorePage();fitScorePage();PianoTrai
                 modifier = Modifier.fillMaxWidth().background(Color(0xFFF7F5F0)).padding(horizontal = 12.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Button(onClick = { page-- }, enabled = page > 0) { Text("Назад") }
+                Button(onClick = { page-- }, enabled = page > 0) { Text(strings.text("Previous", "Назад")) }
                 Box(
                     modifier = Modifier.weight(1f).padding(horizontal = 12.dp),
                     contentAlignment = Alignment.Center,
@@ -603,9 +633,9 @@ addEventListener('resize',fitScorePage);cropScorePage();fitScorePage();PianoTrai
                     visibleLearningState?.let { state ->
                         if (state.finished) {
                             val result = if (isContinuousFeedback) {
-                                "Итог: верно ${state.correctGroups}, пропущено ${state.missedGroups}"
+                                strings.practiceResult(state.correctGroups, state.missedGroups)
                             } else {
-                                "Готово: ${state.total} позиций сыграно"
+                                strings.completed(state.total)
                             }
                             Text(result, textAlign = TextAlign.Center, color = Color(0xFF173A61))
                         } else {
@@ -614,7 +644,7 @@ addEventListener('resize',fitScorePage);cropScorePage();fitScorePage();PianoTrai
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
                                 Text(
-                                    clefStatus("Басовый", state.expectedLeft, state.accepted),
+                                    strings.clefStatus(strings.text("Bass", "Басовый"), state.expectedLeft, state.accepted),
                                     modifier = Modifier.weight(1f),
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
@@ -622,16 +652,16 @@ addEventListener('resize',fitScorePage);cropScorePage();fitScorePage();PianoTrai
                                 )
                                 Text(
                                     if (state.wrong.isEmpty()) {
-                                        if (isContinuousFeedback) "Оценка ${state.correctGroups}/${state.total}" else "${state.completed + 1}/${state.total}"
+                                        if (isContinuousFeedback) strings.score(state.correctGroups, state.total) else "${state.completed + 1}/${state.total}"
                                     } else {
-                                        "Ошибка: ${state.wrong.sorted().joinToString(" ", transform = ::midiSolfegeName)}"
+                                        strings.mistake(state.wrong.sorted().joinToString(" ", transform = ::midiSolfegeName))
                                     },
                                     modifier = Modifier.padding(horizontal = 12.dp),
                                     maxLines = 1,
                                     color = if (state.wrong.isEmpty()) Color(0xFF4A6178) else Color(0xFFB3261E),
                                 )
                                 Text(
-                                    clefStatus("Скрипичный", state.expectedRight, state.accepted),
+                                    strings.clefStatus(strings.text("Treble", "Скрипичный"), state.expectedRight, state.accepted),
                                     modifier = Modifier.weight(1f),
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
@@ -642,12 +672,12 @@ addEventListener('resize',fitScorePage);cropScorePage();fitScorePage();PianoTrai
                         }
                     }
                 }
-                Button(onClick = { page++ }, enabled = page + 1 < score.normalPages.size) { Text("Далее") }
+                Button(onClick = { page++ }, enabled = page + 1 < score.normalPages.size) { Text(strings.text("Next", "Далее")) }
             }
             playbackError?.let { Text(it, color = Color(0xFFB3261E), modifier = Modifier.padding(horizontal = 12.dp)) }
         } else {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text("В этом пакете нет готовых SVG-страниц. Пересоберите его с --pages-dir.")
+                Text(strings.text("This package has no rendered SVG pages. Rebuild it with --pages-dir.", "В этом пакете нет готовых SVG-страниц. Пересоберите его с --pages-dir."))
             }
         }
     }
@@ -707,20 +737,7 @@ private class ScoreWebView(context: Context) : WebView(context) {
     }
 }
 
-private fun clefStatus(label: String, expected: Set<Int>, accepted: Set<Int>): String {
-    if (expected.isEmpty()) return "$label: —"
-    val correct = expected.intersect(accepted).sorted()
-    val remaining = expected.minus(accepted).sorted()
-    return buildString {
-        append("$label: ")
-        if (correct.isNotEmpty()) append("верно ${correct.joinToString(" ", transform = ::midiSolfegeName)}")
-        if (correct.isNotEmpty() && remaining.isNotEmpty()) append("; ")
-        if (remaining.isNotEmpty()) append("ожидается ${remaining.joinToString(" ", transform = ::midiSolfegeName)}")
-        if (remaining.isEmpty()) append("готово")
-    }
-}
-
-private fun midiSolfegeName(note: Int): String {
+internal fun midiSolfegeName(note: Int): String {
     val names = arrayOf("Do", "Do♯", "Re", "Re♯", "Mi", "Fa", "Fa♯", "Sol", "Sol♯", "La", "La♯", "Si")
     return "${names[note % 12]}${note / 12 - 1}"
 }
