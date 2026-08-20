@@ -10,13 +10,14 @@
 - Пользователь просит ставить каждую новую сборку через ADB. Номер версии автоматически
   меняется в `android-app/app/build.gradle.kts` и виден в шапке приложения.
 
-## Состояние на 2026-08-19
+## Состояние на 2026-08-20
 
-- Последняя установленная сборка: `v0.1.0-1787170049`.
-- `Listen to Your Heart` пересобрана в schema v2 `.pianoscore`, импортирована на
-  планшет и содержит три SVG-страницы 3360×1700.
-- 918/918 MIDI events имеют точную связь с SVG ID; не возвращаться к подбору ноты
-  только по высоте/X без явной причины.
+- Последняя установленная проверенная сборка отображала `v0.1.0-1787174025`.
+- `Listen to Your Heart` пересобрана в schema v3 `.pianoscore`, установлена напрямую
+  в приватное хранилище приложения и содержит 9 SVG-страниц MuseScore, нарезанных
+  между системами для альбомного экрана.
+- 817 MIDI events имеют точную связь с 459 MuseScore SVG-сегментами; правая рука —
+  445 событий, левая — 372. Не возвращаться к подбору ноты только по высоте/X.
 - `WaitingPractice` повторяет произведение/выбранный сегмент после последней группы.
 - Красные маркеры живут 250 мс, затем сохраняются только у удерживаемых клавиш.
 - `MidiController` декодирует весь входной MIDI callback. Это критично: старая версия
@@ -29,9 +30,10 @@
 - `MidiController.kt` — BLE/USB MIDI, полный decoder входящих сообщений.
 - `MidiPlayback.kt` — parser/scheduler MIDI, скорость Play, All Notes Off.
 - `PracticeEngine.kt` — ожидающее обучение и Play feedback.
-- `ScorePackageRepository.kt` — import, schema v1/v2, exact mapping и карта тактов.
-- `score-preparer/src/generate_timeline_mapping.py` — MusicXML ID и exact mapping.
-- `score-preparer/src/render_pages.py` — Verovio SVG без footer, нормализация viewBox.
+- `ScorePackageRepository.kt` — import, schema v1–v3, проверка SHA-256 всех SVG и mapping.
+- `score-preparer/src/prepare_mscz.py` — основной `.mscz → .pianoscore` v3 pipeline.
+- `score-preparer/src/install_pianoscore.py` — проверенная прямая установка в debug-приложение через ADB.
+- `score-preparer/README.md` — актуальные команды конвертации, audit и установки.
 - `docs/review-2026-08-19.md` — технический review и известные риски.
 
 ## Сборка, тесты, установка
@@ -46,11 +48,11 @@ cd /Users/konstantin/projects.my/piano_trainer/android-app
 
 Gradle может требовать повышенного разрешения из-за записи в `~/.gradle`.
 
-Чтобы доставить новый score package, положить его в Downloads и импортировать через UI:
+Чтобы доставить новый score package в debug-сборку без Downloads:
 
 ```sh
-adb -s R5GL63ELKFR push local-content/l2uh-v2.pianoscore \
-  /sdcard/Download/Listen_To_Your_Heart_v2.pianoscore
+python3 score-preparer/src/install_pianoscore.py \
+  local-content/listen-to-your-heart-roxette.pianoscore --serial R5GL63ELKFR
 ```
 
 ## Следующий приоритет

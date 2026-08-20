@@ -149,7 +149,7 @@ class ScorePackageRepository(private val context: Context) {
         ZipFile(file).use { archive ->
             val manifestEntry = archive.getEntry("manifest.json") ?: error("В пакете нет manifest.json")
             val manifest = archive.getInputStream(manifestEntry).bufferedReader().use { JSONObject(it.readText()) }
-            require(manifest.optInt("schemaVersion") in 1..2) { "Неподдерживаемая версия пакета" }
+            require(manifest.optInt("schemaVersion") in 1..3) { "Неподдерживаемая версия пакета" }
             val id = manifest.getString("id")
             val title = manifest.getString("title")
             val requiredFiles = listOf(
@@ -158,16 +158,17 @@ class ScorePackageRepository(private val context: Context) {
                 manifest.getString("mapping"),
             )
             val checksums = manifest.optJSONObject("sha256") ?: error("В пакете нет контрольных сумм")
-            requiredFiles.forEach { name ->
+            val normalPages = manifest.optJSONObject("pages")
+                ?.optJSONArray("normal")
+                ?.let { pages -> List(pages.length()) { index -> pages.getString(index) } }
+                .orEmpty()
+            require(normalPages.isNotEmpty()) { "В пакете нет страниц партитуры" }
+            (requiredFiles + normalPages).distinct().forEach { name ->
                 val entry = archive.getEntry(name) ?: error("В пакете нет $name")
                 val expected = checksums.getString(name)
                 val actual = archive.getInputStream(entry).use(::sha256)
                 require(expected.equals(actual, ignoreCase = true)) { "Контрольная сумма $name не совпадает" }
             }
-            val normalPages = manifest.optJSONObject("pages")
-                ?.optJSONArray("normal")
-                ?.let { pages -> List(pages.length()) { index -> pages.getString(index) } }
-                .orEmpty()
             ScorePackage(id = id, title = title, file = file, normalPages = normalPages)
         }
     }.getOrNull()

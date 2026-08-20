@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 import xml.etree.ElementTree as ET
@@ -19,8 +20,8 @@ def local_name(tag: str) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("package", type=Path)
-    parser.add_argument("--target-ratio", type=float, default=1.6,
-                        help="expected score viewport width/height ratio")
+    parser.add_argument("--target-ratio", type=float,
+                        help="optional expected score viewport width/height ratio")
     parser.add_argument("--strict", action="store_true", help="fail when warnings are found")
     args = parser.parse_args()
 
@@ -34,6 +35,14 @@ def main() -> int:
             manifest = {}
         else:
             manifest = json.loads(archive.read("manifest.json"))
+        checksums = manifest.get("sha256", {})
+        for name, expected in checksums.items():
+            if name not in names:
+                errors.append(f"{name} is missing")
+                continue
+            actual = hashlib.sha256(archive.read(name)).hexdigest()
+            if actual.lower() != str(expected).lower():
+                errors.append(f"checksum mismatch for {name}")
 
         mapping_name = manifest.get("mapping", "mapping.json")
         if mapping_name not in names:
@@ -46,7 +55,11 @@ def main() -> int:
         empty_links = [event for event in events if not event.get("scoreNoteIds")]
         if empty_links:
             message = f"{len(empty_links)}/{len(events)} MIDI events have no scoreNoteIds"
-            (errors if mapping.get("kind") == "exact-score" else warnings).append(message)
+            (errors if mapping.get("kind") in {"exact-score", "musescore-native"} else warnings).append(message)
+        hands = Counter(event.get("hand") for event in events)
+        for hand in ("left", "right"):
+            if not hands[hand]:
+                errors.append(f"practice timeline has no {hand}-hand events")
 
         groups: dict[str, list[dict]] = defaultdict(list)
         for event in events:
@@ -69,7 +82,7 @@ def main() -> int:
                 if "note" in classes and element.attrib.get("data-id"):
                     score_note_ids.add(element.attrib["data-id"])
 
-        if page_ratios:
+        if page_ratios and args.target_ratio:
             mismatch = max(abs(ratio - args.target_ratio) / args.target_ratio for ratio in page_ratios)
             if mismatch > 0.05:
                 warnings.append(
@@ -90,7 +103,7 @@ def main() -> int:
         if score_name in names:
             root = ET.fromstring(archive.read(score_name))
             pitched_notes = sum(local_name(element.tag) == "pitch" for element in root.iter())
-            if pitched_notes != len(events) and mapping.get("kind") != "exact-score":
+            if pitched_notes != len(events) and mapping.get("kind") not in {"exact-score", "musescore-native"}:
                 warnings.append(
                     f"MusicXML has {pitched_notes} pitched noteheads for {len(events)} MIDI events; "
                     "ties/voices require explicit many-to-many mapping"

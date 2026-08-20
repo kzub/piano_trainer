@@ -5,8 +5,8 @@
 ## Структура
 
 - `android-app` — Android-приложение.
-- `score-preparer` — Mac CLI для сборки проверяемого `.pianoscore`.
-- `pianoscore-schema` — контракт пакета композиции.
+- `score-preparer` — Mac CLI для сборки проверяемого `.pianoscore` прямо из MuseScore `.mscz`.
+- `pianoscore-schema` — контракт пакета композиции schema v3.
 - `docs` — решения и сценарии проверки.
 
 ## Документация
@@ -15,6 +15,8 @@
 - [План доработки](docs/roadmap.md) — сверка с первоначальными требованиями и оставшаяся работа.
 - [Контекст следующего сеанса](docs/handoff.md) — краткий handoff: устройство, команды сборки и важные технические решения.
 - [Review 2026-08-19](docs/review-2026-08-19.md) — выполненная работа, исправленные дефекты, проверки и риски.
+- [Подготовка партитуры](score-preparer/README.md) — основной путь `.mscz → .pianoscore`, строгий audit и прямая установка на планшет.
+- [Формат `.pianoscore`](pianoscore-schema/README.md) — состав и инварианты schema v3.
 
 ## Первый запуск
 
