@@ -8,9 +8,15 @@ data class ExpectedGroup(
     val measure: Int? = null,
     val leftScoreNoteIds: Set<String> = emptySet(),
     val rightScoreNoteIds: Set<String> = emptySet(),
+    val leftScoreNoteIdsByPitch: Map<Int, Set<String>> = emptyMap(),
+    val rightScoreNoteIdsByPitch: Map<Int, Set<String>> = emptyMap(),
 ) {
     val pitches: Set<Int> = leftPitches + rightPitches
     val scoreNoteIds: Set<String> = leftScoreNoteIds + rightScoreNoteIds
+    val scoreNoteIdsByPitch: Map<Int, Set<String>> =
+        (leftScoreNoteIdsByPitch.keys + rightScoreNoteIdsByPitch.keys).associateWith { pitch ->
+            leftScoreNoteIdsByPitch[pitch].orEmpty() + rightScoreNoteIdsByPitch[pitch].orEmpty()
+        }
 }
 
 internal data class MidiSource(val track: Int, val channel: Int)
@@ -65,6 +71,7 @@ data class PracticeState(
     val expectedLeft: Set<Int> = emptySet(),
     val expectedRight: Set<Int> = emptySet(),
     val accepted: Set<Int> = emptySet(),
+    val held: Set<Int> = emptySet(),
     val attempted: Set<Int> = emptySet(),
     val wrong: Set<Int> = emptySet(),
     val finished: Boolean = false,
@@ -85,6 +92,17 @@ class WaitingPractice(
 
     fun current(): PracticeState = state()
 
+    /** Moves waiting practice to the first expected group in [measure]. */
+    fun seekToMeasure(measure: Int): PracticeState? {
+        val targetIndex = groups.indexOfFirst { it.measure == measure }
+        if (targetIndex < 0) return null
+        index = targetIndex
+        accepted.clear()
+        attempted.clear()
+        attemptStartedAt = null
+        return state()
+    }
+
     fun notePressed(pitch: Int, nowMillis: Long): PracticeState {
         if (index >= groups.size) return state()
         // Bluetooth/USB transports may repeat Note On while a key is held.
@@ -95,7 +113,9 @@ class WaitingPractice(
         attempted += pitch
         val expected = groups[index].pitches
         if (pitch in expected) accepted += pitch
-        if (accepted.containsAll(expected)) {
+        // A chord succeeds only when every expected key is physically down.
+        // Remembering released notes let a user play its notes one at a time.
+        if (held.containsAll(expected) && accepted.containsAll(expected)) {
             index++
             accepted.clear()
             attempted.clear()
@@ -109,13 +129,12 @@ class WaitingPractice(
 
     fun noteReleased(pitch: Int): PracticeState {
         held -= pitch
-        // Wrong notes are visualized only for as long as their keys are held.
-        // Correct notes remain accepted so a chord may still be entered one key
-        // at a time within the attempt window.
-        if (pitch !in groups.getOrNull(index)?.pitches.orEmpty()) {
-            attempted -= pitch
-            if (attempted.isEmpty()) attemptStartedAt = null
-        }
+        // Both wrong and correct keys cease to count on release. This makes a
+        // successful chord an actual simultaneous press, not a remembered
+        // sequence of individual notes.
+        accepted -= pitch
+        attempted -= pitch
+        if (attempted.isEmpty()) attemptStartedAt = null
         return state()
     }
 
@@ -127,6 +146,9 @@ class WaitingPractice(
         // until *all* keys were released, so normal playing filled the score
         // with an ever-growing column of red markers.
         attempted.retainAll(held)
+        // A still-held note from an older attempt must not combine with a new
+        // note after the 250 ms chord window has elapsed.
+        accepted.clear()
         attemptStartedAt = if (attempted.isEmpty()) null else nowMillis
         return state()
     }
@@ -142,6 +164,7 @@ class WaitingPractice(
             expectedLeft = group?.leftPitches.orEmpty(),
             expectedRight = group?.rightPitches.orEmpty(),
             accepted = accepted.toSet(),
+            held = held.toSet(),
             attempted = attempted.toSet(),
             wrong = attempted.minus(expected),
             finished = finished,

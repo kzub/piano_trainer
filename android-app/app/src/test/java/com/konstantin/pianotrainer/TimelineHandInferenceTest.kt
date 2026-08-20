@@ -92,4 +92,64 @@ class TimelineHandInferenceTest {
         assertEquals(emptySet<Int>(), practice.noteReleased(61).wrong)
         assertEquals(null, practice.expireAttemptWindow(800))
     }
+
+    @Test
+    fun chordRequiresEveryCorrectKeyToStillBeHeld() {
+        val practice = WaitingPractice(
+            listOf(
+                ExpectedGroup("chord", 0, emptySet(), setOf(60, 64)),
+                ExpectedGroup("next", 240, emptySet(), setOf(65)),
+            ),
+        )
+
+        val pressed = practice.notePressed(60, 0)
+        assertEquals(setOf(60), pressed.held)
+        assertEquals(setOf(60), pressed.accepted)
+
+        val released = practice.noteReleased(60)
+        assertEquals(emptySet<Int>(), released.held)
+        assertEquals(emptySet<Int>(), released.accepted)
+
+        val secondKey = practice.notePressed(64, 100)
+        assertEquals(0, secondKey.completed)
+        assertEquals(setOf(60, 64), secondKey.expected)
+
+        val completed = practice.notePressed(60, 150)
+        assertEquals(1, completed.completed)
+        assertEquals(setOf(65), completed.expected)
+    }
+
+    @Test
+    fun chordKeysMustBePressedWithinTheAttemptWindow() {
+        val practice = WaitingPractice(
+            listOf(
+                ExpectedGroup("chord", 0, emptySet(), setOf(60, 64)),
+                ExpectedGroup("next", 240, emptySet(), setOf(65)),
+            ),
+            attemptWindowMillis = 250,
+        )
+
+        practice.notePressed(60, 0)
+        val lateSecondKey = practice.notePressed(64, 300)
+
+        assertEquals(0, lateSecondKey.completed)
+        assertEquals(setOf(64), lateSecondKey.accepted)
+    }
+
+    @Test
+    fun waitingPracticeCanSeekToTheFirstGroupInAMeasure() {
+        val practice = WaitingPractice(
+            listOf(
+                ExpectedGroup("first", 0, emptySet(), setOf(60), measure = 1),
+                ExpectedGroup("second", 240, emptySet(), setOf(62), measure = 2),
+                ExpectedGroup("third", 360, emptySet(), setOf(64), measure = 2),
+            ),
+        )
+
+        val sought = practice.seekToMeasure(2)
+
+        assertEquals(1, sought!!.completed)
+        assertEquals(setOf(62), sought.expected)
+        assertEquals(240L, sought.currentTick)
+    }
 }

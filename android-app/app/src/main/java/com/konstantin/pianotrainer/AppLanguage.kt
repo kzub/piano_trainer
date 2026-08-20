@@ -31,6 +31,8 @@ class Strings(private val language: AppLanguage) {
     fun pages(count: Int) = text("$count pages", "$count стр.")
     fun noPages() = text("No SVG pages available", "Нужны SVG-страницы")
     fun pageCounter(page: Int, count: Int) = text("${page + 1}/$count", "${page + 1}/$count")
+    fun measureLabel(number: Int) = text("Measure $number", "Такт $number")
+    fun noPosition() = text("No position", "Нет позиции")
     fun scoreDeleted(title: String) = text(
         "“$title” will be deleted from this tablet. The source file on your Mac will not change.",
         "«$title» будет удалена с планшета. Исходный файл на Mac не изменится.",

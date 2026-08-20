@@ -124,9 +124,11 @@ class ScorePackageRepository(private val context: Context) {
             if (hand == "left") {
                 group.left += pitch
                 group.leftScoreNoteIds += scoreIds
+                group.leftScoreNoteIdsByPitch.getOrPut(pitch) { linkedSetOf() } += scoreIds
             } else {
                 group.right += pitch
                 group.rightScoreNoteIds += scoreIds
+                group.rightScoreNoteIdsByPitch.getOrPut(pitch) { linkedSetOf() } += scoreIds
             }
         }
         PracticeTimeline(
@@ -136,6 +138,7 @@ class ScorePackageRepository(private val context: Context) {
                 ExpectedGroup(
                     id, value.tick, value.left, value.right, value.measure,
                     value.leftScoreNoteIds, value.rightScoreNoteIds,
+                    value.leftScoreNoteIdsByPitch, value.rightScoreNoteIdsByPitch,
                 )
             }.sortedWith(compareBy<ExpectedGroup> { it.tick }.thenBy { it.id }),
         )
@@ -192,4 +195,6 @@ private data class PracticeGroupBuilder(
     val right: MutableSet<Int> = linkedSetOf(),
     val leftScoreNoteIds: MutableSet<String> = linkedSetOf(),
     val rightScoreNoteIds: MutableSet<String> = linkedSetOf(),
+    val leftScoreNoteIdsByPitch: MutableMap<Int, MutableSet<String>> = linkedMapOf(),
+    val rightScoreNoteIdsByPitch: MutableMap<Int, MutableSet<String>> = linkedMapOf(),
 )

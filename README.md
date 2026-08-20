@@ -13,11 +13,16 @@ The project is designed for a Samsung SM-X230 tablet and a Roland FP-30, but use
 - Connects to USB MIDI and Bluetooth LE MIDI keyboards.
 - Plays the learning MIDI through the connected instrument.
 - Waits for the right notes in **Practise** mode and marks mistakes.
-- Supports left hand, right hand, or both hands; speed control; and a selected score range.
+- Supports left hand, right hand, or both hands; speed control; and a selected range of measures.
 
 ## Screens
 
 All product UI is available in English by default (Russian can be selected inside the app).
+
+![English score and practice screen on Samsung SM-X230](docs/images/piano-practice-en.png)
+
+*Score screen: choose hands and speed, then use **Practise** or **Play**. Move the cursor
+with **←** and **→**, and mark a range of measures with **[** and **]**.*
 
 ![English score library on Samsung SM-X230](docs/images/piano-library-en.png)
 
@@ -26,10 +31,6 @@ All product UI is available in English by default (Russian can be selected insid
 ![English MIDI settings on Samsung SM-X230](docs/images/piano-midi-en.png)
 
 *MIDI settings: scan for Bluetooth MIDI or refresh USB MIDI devices.*
-
-![English score and practice screen on Samsung SM-X230](docs/images/piano-practice-en.png)
-
-*Score screen: choose hands and speed, then use **Practise** or **Play**.*
 
 ## Quick start
 
@@ -108,7 +109,10 @@ Then select **MIDI** to connect the piano via USB, or allow Nearby devices and u
 
 - select **Practise** — the cursor waits until you play the expected note or chord;
 - select **Play** — the score plays through the connected MIDI device while the cursor advances;
-- use **From** and **To**, then tap notes, to practise or play a smaller range.
+- practise or play a smaller range of measures: move the cursor with **←** and **→** at the
+  bottom of the screen, press **[** on the measure that starts the range, move on to the
+  measure that ends it and press **]**. Pressing both on the same measure selects that single
+  measure, and **Reset** clears the range. Practise and Play both loop over the selection.
 
 ## Do the same with an agent
 

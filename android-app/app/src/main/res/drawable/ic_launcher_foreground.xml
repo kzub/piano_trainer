@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Keybed -->
+    <path
+        android:pathData="M20,30 L80,30 L80,79 A3,3 0 0 1 77,82 L23,82 A3,3 0 0 1 20,79 Z"
+        android:fillColor="#FFFFFF" />
+
+    <!-- White key separators -->
+    <path android:pathData="M28.57,60 L28.57,81.4" android:strokeColor="#1F3A5F" android:strokeWidth="0.6" />
+    <path android:pathData="M37.14,60 L37.14,81.4" android:strokeColor="#1F3A5F" android:strokeWidth="0.6" />
+    <path android:pathData="M45.71,30 L45.71,81.4" android:strokeColor="#1F3A5F" android:strokeWidth="0.6" />
+    <path android:pathData="M54.29,60 L54.29,81.4" android:strokeColor="#1F3A5F" android:strokeWidth="0.6" />
+    <path android:pathData="M62.86,60 L62.86,81.4" android:strokeColor="#1F3A5F" android:strokeWidth="0.6" />
+    <path android:pathData="M71.43,60 L71.43,81.4" android:strokeColor="#1F3A5F" android:strokeWidth="0.6" />
+
+    <!-- Black keys -->
+    <path android:pathData="M26.07,30 L31.07,30 L31.07,60 L26.07,60 Z" android:fillColor="#101418" />
+    <path android:pathData="M34.64,30 L39.64,30 L39.64,60 L34.64,60 Z" android:fillColor="#101418" />
+    <path android:pathData="M51.79,30 L56.79,30 L56.79,60 L51.79,60 Z" android:fillColor="#101418" />
+    <path android:pathData="M60.36,30 L65.36,30 L65.36,60 L60.36,60 Z" android:fillColor="#101418" />
+    <path android:pathData="M68.93,30 L73.93,30 L73.93,60 L68.93,60 Z" android:fillColor="#101418" />
+</vector>
