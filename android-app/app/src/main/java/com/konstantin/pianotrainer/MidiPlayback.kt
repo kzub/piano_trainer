@@ -3,12 +3,28 @@ package com.konstantin.pianotrainer
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import kotlin.math.roundToInt
 import kotlin.math.roundToLong
 
 data class MidiPlaybackState(
     val tick: Long,
     val activePitches: Set<Int>,
 )
+
+/**
+ * Playback is produced by the connected instrument, not by an in-app synth, so the only way to
+ * make it quieter is to send softer notes. Channel Volume (CC7) is not an option: the recording
+ * and the player's own keys share a MIDI channel, so it would mute the player as well.
+ */
+internal fun scaleNoteVelocity(message: ByteArray, volume: Float): ByteArray {
+    if (message.size < 3) return message
+    if (message[0].toInt() and 0xF0 != 0x90) return message
+    val velocity = message[2].toInt() and 0x7F
+    if (velocity == 0) return message // a zero-velocity Note On is really a Note Off
+    // Never round down to zero, which would silence the note instead of softening it.
+    val scaled = (velocity * volume).roundToInt().coerceIn(1, 127)
+    return byteArrayOf(message[0], message[1], scaled.toByte())
+}
 
 class MidiPlayback(private val controller: MidiController) {
     private val handler = Handler(Looper.getMainLooper())
@@ -21,10 +37,12 @@ class MidiPlayback(private val controller: MidiController) {
         fromTick: Long = 0L,
         untilTick: Long? = null,
         speed: Float = 1f,
+        volume: Float = 1f,
         onProgress: (MidiPlaybackState) -> Unit,
         onFinished: () -> Unit,
     ) {
         require(speed in 0.25f..2f) { "Скорость должна быть от 0,25× до 2×" }
+        require(volume in 0.05f..1f) { "Громкость должна быть от 5% до 100%" }
         stop()
         val session = generation
         val allEvents = MidiFile.parse(midi)
@@ -33,10 +51,12 @@ class MidiPlayback(private val controller: MidiController) {
         val startMillis = events.first().millis
         val startedAt = SystemClock.uptimeMillis()
         events.forEach { event ->
+            // Scale once here, not on every firing, and highlight exactly what is sent.
+            val message = scaleNoteVelocity(event.message, volume)
             val task = Runnable {
                 if (session != generation) return@Runnable
-                controller.send(event.message)
-                updateActiveNotes(event.message)
+                controller.send(message)
+                updateActiveNotes(message)
             }
             scheduled += task
             handler.postDelayed(task, ((event.millis - startMillis) / speed).roundToLong())

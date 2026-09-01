@@ -28,13 +28,16 @@
 - `MidiController` декодирует весь входной MIDI callback. Это критично: старая версия
   читала только первые три байта и могла пропускать Note Off при batched MIDI.
 - Play имеет скорости 0,25×, 0,5×, 0,75×, 1×, 1,25×, 1,5×; выбор доступен до запуска.
+- Play имеет громкости 25%, 40%, 60%, 80%, 100%; выбор тоже доступен только до запуска.
+  Громкость масштабирует velocity отправляемых Note On, а не CC7, — иначе приглушилась бы
+  и собственная игра на FP-30 (тот же MIDI-канал).
 
 ## Основные файлы
 
-- `MainActivity.kt` — Compose UI, курсор и выбор диапазона `[`/`]`, выбор рук/скорости,
+- `MainActivity.kt` — Compose UI, курсор и выбор диапазона `[`/`]`, выбор рук/скорости/громкости,
   WebView SVG overlay.
 - `MidiController.kt` — BLE/USB MIDI, полный decoder входящих сообщений.
-- `MidiPlayback.kt` — parser/scheduler MIDI, скорость Play, All Notes Off.
+- `MidiPlayback.kt` — parser/scheduler MIDI, скорость и громкость Play, All Notes Off.
 - `PracticeEngine.kt` — ожидающее обучение и Play feedback.
 - `ScorePackageRepository.kt` — import, schema v1–v3, проверка SHA-256 всех SVG и mapping.
 - `score-preparer/src/prepare_mscz.py` — основной `.mscz → .pianoscore` v3 pipeline.

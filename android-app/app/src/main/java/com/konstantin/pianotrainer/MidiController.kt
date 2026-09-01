@@ -1,12 +1,14 @@
 package com.konstantin.pianotrainer
 
 import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
+import android.content.pm.PackageManager
 import android.media.midi.MidiDevice
 import android.media.midi.MidiDeviceInfo
 import android.media.midi.MidiInputPort
@@ -19,6 +21,13 @@ import android.os.ParcelUuid
 import java.util.UUID
 
 data class MidiEndpoint(val info: MidiDeviceInfo, val label: String)
+
+enum class MidiConnectionState {
+    DISCONNECTED,
+    SEARCHING,
+    CONNECTING,
+    CONNECTED,
+}
 
 internal sealed interface IncomingMidiEvent {
     data class Note(val pitch: Int, val velocity: Int, val pressed: Boolean) : IncomingMidiEvent
@@ -65,16 +74,20 @@ internal fun decodeMidiMessages(message: ByteArray, offset: Int, count: Int): Li
 }
 
 class MidiController(context: Context) {
+    private val appContext = context.applicationContext
     private val mainHandler = Handler(Looper.getMainLooper())
-    private val midiManager = context.getSystemService(MidiManager::class.java)
-    private val bluetoothAdapter = context.getSystemService(BluetoothManager::class.java)?.adapter
+    private val midiManager = appContext.getSystemService(MidiManager::class.java)
+    private val bluetoothAdapter = appContext.getSystemService(BluetoothManager::class.java)?.adapter
+    private val preferences = appContext.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
     private var scanner = bluetoothAdapter?.bluetoothLeScanner
     private var device: MidiDevice? = null
     private var outputPort: MidiOutputPort? = null
     private var inputPort: MidiInputPort? = null
     private var scanCallback: ScanCallback? = null
+    private var bluetoothAddressToReconnect: String? = null
 
     var onStatus: (String) -> Unit = {}
+    var onConnectionState: (MidiConnectionState) -> Unit = {}
     var language: AppLanguage = AppLanguage.ENGLISH
     var onBluetoothDevice: (android.bluetooth.BluetoothDevice) -> Unit = {}
     var onNote: (pitch: Int, velocity: Int, pressed: Boolean) -> Unit = { _, _, _ -> }
@@ -119,6 +132,8 @@ class MidiController(context: Context) {
 
     fun open(endpoint: MidiEndpoint) {
         closeConnection()
+        rememberSystemEndpoint(endpoint)
+        setConnectionState(MidiConnectionState.CONNECTING)
         onStatus(status("Connecting to ${endpoint.label}…", "Подключение к ${endpoint.label}…"))
         midiManager.openDevice(endpoint.info, { opened ->
             if (opened == null) {
@@ -131,29 +146,43 @@ class MidiController(context: Context) {
 
     fun scanBluetooth() {
         val activeScanner = scanner
+        if (!hasBluetoothPermissions()) {
+            setConnectionState(MidiConnectionState.DISCONNECTED)
+            onStatus(status("Allow Nearby devices to search for Bluetooth MIDI", "Разрешите доступ к устройствам поблизости для поиска Bluetooth MIDI"))
+            return
+        }
         if (activeScanner == null || bluetoothAdapter?.isEnabled != true) {
+            setConnectionState(MidiConnectionState.DISCONNECTED)
             onStatus(status("Turn on Bluetooth on this tablet", "Включите Bluetooth на планшете"))
             return
         }
         stopScan()
+        setConnectionState(MidiConnectionState.SEARCHING)
         onStatus(status("Scanning for Bluetooth MIDI…", "Поиск Bluetooth MIDI…"))
         val filter = ScanFilter.Builder().setServiceUuid(ParcelUuid(MIDI_BLE_UUID)).build()
         scanCallback = object : ScanCallback() {
             override fun onScanResult(callbackType: Int, result: ScanResult) {
                 onBluetoothDevice(result.device)
                 onStatus(status("Found: ${result.device.name ?: "Bluetooth MIDI"}", "Найдено: ${result.device.name ?: "Bluetooth MIDI"}"))
+                if (result.device.address == bluetoothAddressToReconnect) {
+                    bluetoothAddressToReconnect = null
+                    openBluetooth(result.device)
+                }
             }
 
             override fun onScanFailed(errorCode: Int) {
+                setConnectionState(MidiConnectionState.DISCONNECTED)
                 onStatus(status("Bluetooth MIDI scan error: $errorCode", "Ошибка поиска Bluetooth MIDI: $errorCode"))
             }
         }
         activeScanner.startScan(listOf(filter), ScanSettings.Builder().build(), scanCallback)
     }
 
-    fun openBluetooth(bluetoothDevice: android.bluetooth.BluetoothDevice) {
+    fun openBluetooth(bluetoothDevice: BluetoothDevice) {
         stopScan()
         closeConnection()
+        rememberBluetoothDevice(bluetoothDevice)
+        setConnectionState(MidiConnectionState.CONNECTING)
         onStatus(status("Connecting to ${bluetoothDevice.name ?: "FP-30"}…", "Подключение к ${bluetoothDevice.name ?: "FP-30"}…"))
         midiManager.openBluetoothDevice(bluetoothDevice, { opened ->
             if (opened == null) onStatus(status("Could not open Bluetooth MIDI", "Не удалось открыть Bluetooth MIDI"))
@@ -173,6 +202,7 @@ class MidiController(context: Context) {
         inputPort = null
         device?.close()
         device = null
+        setConnectionState(MidiConnectionState.DISCONNECTED)
     }
 
     fun close() {
@@ -180,15 +210,41 @@ class MidiController(context: Context) {
         closeConnection()
     }
 
+    /** Reconnects to the most recently selected device when the app is opened. */
+    fun reconnectLastDevice() {
+        when (preferences.getString(LAST_DEVICE_TYPE, null)) {
+            DEVICE_TYPE_SYSTEM -> {
+                val id = preferences.getInt(LAST_SYSTEM_ID, NO_DEVICE_ID)
+                val label = preferences.getString(LAST_SYSTEM_LABEL, null)
+                val endpoint = systemDevices().firstOrNull { it.info.id == id }
+                    ?: systemDevices().firstOrNull { it.label == label }
+                if (endpoint != null) open(endpoint) else startBluetoothSearch()
+            }
+            DEVICE_TYPE_BLUETOOTH -> {
+                val address = preferences.getString(LAST_BLUETOOTH_ADDRESS, null) ?: return
+                bluetoothAddressToReconnect = address
+                startBluetoothSearch()
+            }
+            else -> startBluetoothSearch()
+        }
+    }
+
+    private fun startBluetoothSearch() {
+        bluetoothAddressToReconnect = preferences.getString(LAST_BLUETOOTH_ADDRESS, null)
+        scanBluetooth()
+    }
+
     private fun attach(opened: MidiDevice, name: String) {
         device = opened
         outputPort = opened.openOutputPort(0)
         inputPort = opened.openInputPort(0)
         if (outputPort == null) {
+            setConnectionState(MidiConnectionState.DISCONNECTED)
             onStatus(status("$name has no MIDI input port", "$name не имеет входящего MIDI-порта"))
             return
         }
         outputPort?.connect(receiver)
+        setConnectionState(MidiConnectionState.CONNECTED)
         onStatus(status("Connected: $name. Press a key on the FP-30.", "Подключено: $name. Нажмите клавишу на FP-30."))
     }
 
@@ -203,7 +259,38 @@ class MidiController(context: Context) {
 
     private fun status(english: String, russian: String) = if (language.isRussian) russian else english
 
+    private fun hasBluetoothPermissions(): Boolean =
+        appContext.checkSelfPermission(android.Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED &&
+            appContext.checkSelfPermission(android.Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
+
+    private fun rememberSystemEndpoint(endpoint: MidiEndpoint) {
+        preferences.edit()
+            .putString(LAST_DEVICE_TYPE, DEVICE_TYPE_SYSTEM)
+            .putInt(LAST_SYSTEM_ID, endpoint.info.id)
+            .putString(LAST_SYSTEM_LABEL, endpoint.label)
+            .apply()
+    }
+
+    private fun rememberBluetoothDevice(bluetoothDevice: BluetoothDevice) {
+        preferences.edit()
+            .putString(LAST_DEVICE_TYPE, DEVICE_TYPE_BLUETOOTH)
+            .putString(LAST_BLUETOOTH_ADDRESS, bluetoothDevice.address)
+            .apply()
+    }
+
+    private fun setConnectionState(state: MidiConnectionState) {
+        mainHandler.post { onConnectionState(state) }
+    }
+
     private companion object {
+        const val PREFERENCES_NAME = "midi_connection"
+        const val LAST_DEVICE_TYPE = "last_device_type"
+        const val LAST_SYSTEM_ID = "last_system_id"
+        const val LAST_SYSTEM_LABEL = "last_system_label"
+        const val LAST_BLUETOOTH_ADDRESS = "last_bluetooth_address"
+        const val DEVICE_TYPE_SYSTEM = "system"
+        const val DEVICE_TYPE_BLUETOOTH = "bluetooth"
+        const val NO_DEVICE_ID = -1
         val MIDI_BLE_UUID: UUID = UUID.fromString("03B80E5A-EDE8-4B33-A751-6CE34EC4C700")
     }
 }

@@ -2,6 +2,7 @@ package com.konstantin.pianotrainer
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Test
 
 class TimelineHandInferenceTest {
@@ -151,5 +152,35 @@ class TimelineHandInferenceTest {
         assertEquals(1, sought!!.completed)
         assertEquals(setOf(62), sought.expected)
         assertEquals(240L, sought.currentTick)
+    }
+
+    @Test
+    fun waitingPracticeSeeksToTheFirstGroupAtOrAfterATick() {
+        val practice = WaitingPractice(
+            listOf(
+                ExpectedGroup("first", 0, emptySet(), setOf(60)),
+                ExpectedGroup("second", 240, emptySet(), setOf(62)),
+                ExpectedGroup("third", 480, emptySet(), setOf(64)),
+            ),
+        )
+
+        // A measure boundary rarely lands exactly on a note, so the tick between
+        // two groups must resume at the later one.
+        val sought = practice.seekToTick(300)
+
+        assertEquals(2, sought!!.completed)
+        assertEquals(setOf(64), sought.expected)
+        assertEquals(480L, sought.currentTick)
+    }
+
+    @Test
+    fun waitingPracticeReportsNoGroupPastTheEndOfTheSegment() {
+        val practice = WaitingPractice(
+            listOf(ExpectedGroup("only", 0, emptySet(), setOf(60))),
+        )
+
+        // The caller falls back to the start of the segment in this case.
+        assertNull(practice.seekToTick(240))
+        assertEquals(0, practice.current().completed)
     }
 }

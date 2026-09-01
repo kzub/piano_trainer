@@ -93,8 +93,18 @@ class WaitingPractice(
     fun current(): PracticeState = state()
 
     /** Moves waiting practice to the first expected group in [measure]. */
-    fun seekToMeasure(measure: Int): PracticeState? {
-        val targetIndex = groups.indexOfFirst { it.measure == measure }
+    fun seekToMeasure(measure: Int): PracticeState? =
+        seekTo(groups.indexOfFirst { it.measure == measure })
+
+    /**
+     * Moves waiting practice to the first expected group at or after [tick]. A
+     * fresh session uses this to continue from the cursor instead of the
+     * segment's first note, e.g. after switching the practised hand.
+     */
+    fun seekToTick(tick: Long): PracticeState? =
+        seekTo(groups.indexOfFirst { it.tick >= tick })
+
+    private fun seekTo(targetIndex: Int): PracticeState? {
         if (targetIndex < 0) return null
         index = targetIndex
         accepted.clear()

@@ -13,7 +13,7 @@ The project is designed for a Samsung SM-X230 tablet and a Roland FP-30, but use
 - Connects to USB MIDI and Bluetooth LE MIDI keyboards.
 - Plays the learning MIDI through the connected instrument.
 - Waits for the right notes in **Practise** mode and marks mistakes.
-- Supports left hand, right hand, or both hands; speed control; and a selected range of measures.
+- Supports left hand, right hand, or both hands; speed and playback-volume control; and a selected range of measures.
 
 ## Screens
 
@@ -21,7 +21,7 @@ All product UI is available in English by default (Russian can be selected insid
 
 ![English score and practice screen on Samsung SM-X230](docs/images/piano-practice-en.png)
 
-*Score screen: choose hands and speed, then use **Practise** or **Play**. Move the cursor
+*Score screen: choose hands, speed and playback volume, then use **Practise** or **Play**. Move the cursor
 with **←** and **→**, and mark a range of measures with **[** and **]**.*
 
 ![English score library on Samsung SM-X230](docs/images/piano-library-en.png)
@@ -105,7 +105,7 @@ python3 score-preparer/src/install_pianoscore.py \
 
 Use `--serial <adb-serial>` if more than one device is connected. The installer validates the package, copies it to the app’s private library, and restarts Piano Trainer.
 
-Then select **MIDI** to connect the piano via USB, or allow Nearby devices and use **Scan Bluetooth MIDI**. Open a score, choose a hand and a speed, and:
+Then select **MIDI** to connect the piano via USB, or allow Nearby devices and use **Scan Bluetooth MIDI**. Open a score, choose a hand, a speed and a playback volume, and:
 
 - select **Practise** — the cursor waits until you play the expected note or chord;
 - select **Play** — the score plays through the connected MIDI device while the cursor advances;

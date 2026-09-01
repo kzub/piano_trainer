@@ -59,6 +59,9 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.unit.dp
+import java.time.LocalTime
+import java.time.format.DateTimeFormatter
+import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
 
 private enum class PracticeHands(val label: String) {
@@ -82,6 +85,40 @@ private enum class PracticeHands(val label: String) {
         }
         return selected.takeIf { it.pitches.isNotEmpty() }
     }
+}
+
+private val clockFormatter: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
+
+@Composable
+private fun SystemTime() {
+    var time by remember { mutableStateOf(LocalTime.now()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            time = LocalTime.now()
+            delay(1_000)
+        }
+    }
+    Text(time.format(clockFormatter), color = Color.White, style = MaterialTheme.typography.titleMedium)
+}
+
+@Composable
+private fun MidiButton(state: MidiConnectionState, onClick: () -> Unit) {
+    var highlighted by remember { mutableStateOf(false) }
+    LaunchedEffect(state) {
+        highlighted = false
+        if (state == MidiConnectionState.SEARCHING) {
+            while (true) {
+                delay(500)
+                highlighted = !highlighted
+            }
+        }
+    }
+    Button(
+        onClick = onClick,
+        colors = ButtonDefaults.buttonColors(
+            containerColor = if (state == MidiConnectionState.SEARCHING && highlighted) Color(0xFF8066B5) else Color(0xFF6750A4),
+        ),
+    ) { Text("MIDI") }
 }
 
 class MainActivity : ComponentActivity() {
@@ -122,6 +159,13 @@ private fun PianoTrainerApp(repository: ScorePackageRepository) {
     var openedScore by remember { mutableStateOf<ScorePackage?>(null) }
     var scoreToDelete by remember { mutableStateOf<ScorePackage?>(null) }
     var showMidiSettings by remember { mutableStateOf(false) }
+    var midiConnectionState by remember { mutableStateOf(MidiConnectionState.DISCONNECTED) }
+    val bluetoothPermissionsGranted = context.checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED &&
+        context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
+    midiController.onConnectionState = { midiConnectionState = it }
+    val bluetoothPermissions = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
+        if (result.values.all { it }) midiController.reconnectLastDevice()
+    }
     DisposableEffect(midiController) {
         if (BuildConfig.DEBUG) {
             DebugMidiInput.onNote = { pitch, velocity, pressed ->
@@ -131,6 +175,13 @@ private fun PianoTrainerApp(repository: ScorePackageRepository) {
         onDispose {
             if (BuildConfig.DEBUG) DebugMidiInput.onNote = null
             midiController.close()
+        }
+    }
+    LaunchedEffect(midiController) {
+        if (bluetoothPermissionsGranted) {
+            midiController.reconnectLastDevice()
+        } else {
+            bluetoothPermissions.launch(arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT))
         }
     }
     val importer = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -161,7 +212,7 @@ private fun PianoTrainerApp(repository: ScorePackageRepository) {
                                 language = if (language == AppLanguage.ENGLISH) AppLanguage.RUSSIAN else AppLanguage.ENGLISH
                                 AppLanguage.save(context, language)
                             }) { Text(language.toggleLabel) }
-                            Button(onClick = { showMidiSettings = true }) { Text("MIDI") }
+                            MidiButton(state = midiConnectionState, onClick = { showMidiSettings = true })
                         }
                     }
                     if (scores.isEmpty()) {
@@ -242,6 +293,7 @@ private fun MidiSettingsScreen(controller: MidiController, strings: Strings, onB
         if (result.values.all { it }) {
             endpoints = controller.systemDevices()
             status = strings.text("Permissions granted. Select USB MIDI or start a Bluetooth MIDI scan.", "Разрешения получены. Выберите USB MIDI или начните поиск Bluetooth MIDI.")
+            controller.reconnectLastDevice()
         } else {
             status = strings.text("Bluetooth MIDI requires Nearby devices permissions", "Для Bluetooth MIDI нужны разрешения «Устройства поблизости»")
         }
@@ -318,6 +370,8 @@ private fun ScoreScreen(score: ScorePackage, repository: ScorePackageRepository,
     var handMenuExpanded by remember { mutableStateOf(false) }
     var playbackSpeed by remember { mutableStateOf(1f) }
     var speedMenuExpanded by remember { mutableStateOf(false) }
+    var playbackVolume by remember { mutableStateOf(1f) }
+    var volumeMenuExpanded by remember { mutableStateOf(false) }
     val playback = remember(score.id) { MidiPlayback(controller) }
     DisposableEffect(playback) { onDispose { playback.stop() } }
     controller.onNote = { pitch, _, pressed ->
@@ -393,6 +447,7 @@ private fun ScoreScreen(score: ScorePackage, repository: ScorePackageRepository,
                 fromTick = startTick,
                 untilTick = untilTick,
                 speed = playbackSpeed,
+                volume = playbackVolume,
                 onProgress = { state ->
                     if (playbackState == null || state.tick >= playbackState!!.tick) {
                         playbackState = state
@@ -410,6 +465,69 @@ private fun ScoreScreen(score: ScorePackage, repository: ScorePackageRepository,
             playing = true
             playbackError = null
         }.onFailure { playbackError = it.message ?: strings.text("Could not start MIDI playback", "Не удалось запустить MIDI") }
+    }
+    // The cursor selects whole measures, so a session resumes at the start of the
+    // measure it sits on. A cursor outside the selected range would leave nothing
+    // to play, so it falls back to the beginning of that range.
+    fun cursorStartTick(): Long {
+        val cursorStart = cursorMeasureInfo?.startTick ?: browseCursorTick ?: return selectedFromTick ?: 0L
+        val insideSelection = cursorStart >= (selectedFromTick ?: Long.MIN_VALUE) &&
+            cursorStart <= (selectedToTick ?: Long.MAX_VALUE)
+        return if (insideSelection) cursorStart else selectedFromTick ?: 0L
+    }
+    /**
+     * Builds a fresh waiting-practice session over the selected range. A null
+     * [requestedTick] starts the range over; otherwise practice continues at the
+     * first expected note from that tick.
+     */
+    fun restartPracticeFrom(requestedTick: Long?) {
+        playback.stop()
+        playing = false
+        playbackState = null
+        continuousFeedback = null
+        feedbackState = null
+        runCatching {
+            val scoreTimeline = practiceData.getOrThrow()
+            practicePpq = scoreTimeline.ppq
+            val selected = scoreTimeline.groups.asSequence()
+                .filter { group ->
+                    group.tick >= (selectedFromTick ?: Long.MIN_VALUE) &&
+                        group.tick <= (selectedToTick ?: Long.MAX_VALUE)
+                }
+                .mapNotNull(practiceHands::select)
+                .toList()
+            require(selected.isNotEmpty()) { strings.text("There are no notes to practise in the selected measures", "В выбранных тактах нет нот для обучения") }
+            WaitingPractice(selected)
+        }.onSuccess { engine ->
+            practice = engine
+            practiceState = requestedTick?.let(engine::seekToTick) ?: engine.current()
+            val initialMeasure = practiceData.getOrNull()
+                ?.measureAt(practiceState?.currentTick ?: 0L)
+                ?.number ?: 1
+            page = repository.pageForMeasure(score, initialMeasure) ?: 0
+            playbackError = null
+        }.onFailure {
+            // A stale engine must never survive a failed rebuild: it would keep
+            // expecting notes from the range that was in force when it was built.
+            practice = null
+            practiceState = null
+            playbackError = it.message ?: strings.text("Could not start practice", "Не удалось запустить обучение")
+        }
+    }
+    /**
+     * A live session holds its own snapshot of the expected notes, so anything
+     * that changes that set — the range ends, the practised hand — has to rebuild
+     * it. Otherwise practice keeps waiting for notes outside the selected range.
+     */
+    fun rebuildActiveSession() {
+        when {
+            practice != null -> restartPracticeFrom(cursorStartTick())
+            playing -> restartPlaybackFrom(cursorStartTick())
+            else -> {
+                continuousFeedback = null
+                feedbackState = null
+            }
+        }
     }
     val moveCursorByMeasure: (Int) -> Unit = move@ { delta ->
         val measures = timeline?.measures.orEmpty()
@@ -431,11 +549,11 @@ private fun ScoreScreen(score: ScorePackage, repository: ScorePackageRepository,
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
-            Button(onClick = onBack) { Text(strings.text("Library", "Библиотека")) }
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(score.title, color = Color.White, style = MaterialTheme.typography.titleMedium)
-                Text("v${BuildConfig.VERSION_NAME}", color = Color(0xFFB8C7D9), style = MaterialTheme.typography.labelSmall)
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                Button(onClick = onBack) { Text(strings.text("Library", "Библиотека")) }
+                SystemTime()
             }
+            Text(score.title, color = Color.White, style = MaterialTheme.typography.titleMedium)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 // The cursor selects whole measures, so both ends snap to the
                 // bounds of the measure it sits on. "]" must close the range on
@@ -447,6 +565,7 @@ private fun ScoreScreen(score: ScorePackage, repository: ScorePackageRepository,
                         cursorMeasureInfo?.let { measure ->
                             selectedFromTick = measure.startTick
                             if (selectedToTick != null && measure.startTick > selectedToTick!!) selectedToTick = null
+                            rebuildActiveSession()
                         }
                     },
                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
@@ -458,6 +577,7 @@ private fun ScoreScreen(score: ScorePackage, repository: ScorePackageRepository,
                             val endTick = measure.startTick + measure.durationTicks - 1
                             selectedToTick = endTick
                             if (selectedFromTick != null && endTick < selectedFromTick!!) selectedFromTick = null
+                            rebuildActiveSession()
                         }
                     },
                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
@@ -491,10 +611,7 @@ private fun ScoreScreen(score: ScorePackage, repository: ScorePackageRepository,
                                 onClick = {
                                     practiceHands = mode
                                     handMenuExpanded = false
-                                    practice = null
-                                    practiceState = null
-                                    continuousFeedback = null
-                                    feedbackState = null
+                                    rebuildActiveSession()
                                 },
                             )
                         }
@@ -518,36 +635,31 @@ private fun ScoreScreen(score: ScorePackage, repository: ScorePackageRepository,
                         }
                     }
                 }
-                Button(onClick = {
-                    playback.stop()
-                    playing = false
-                    playbackState = null
-                    continuousFeedback = null
-                    feedbackState = null
-                    runCatching {
-                        val scoreTimeline = practiceData.getOrThrow()
-                        practicePpq = scoreTimeline.ppq
-                        val selected = scoreTimeline.groups.asSequence()
-                            .filter { group ->
-                                group.tick >= (selectedFromTick ?: Long.MIN_VALUE) &&
-                                    group.tick <= (selectedToTick ?: Long.MAX_VALUE)
-                            }
-                            .mapNotNull(practiceHands::select)
-                            .toList()
-                        require(selected.isNotEmpty()) { strings.text("There are no notes to practise in the selected measures", "В выбранных тактах нет нот для обучения") }
-                        WaitingPractice(selected)
-                    }.onSuccess { engine ->
-                        practice = engine
-                        practiceState = engine.current()
-                        continuousFeedback = null
-                        feedbackState = null
-                        val initialMeasure = practiceData.getOrNull()
-                            ?.measureAt(engine.current().currentTick ?: 0L)
-                            ?.number ?: 1
-                        page = repository.pageForMeasure(score, initialMeasure) ?: 0
-                        playbackError = null
+                Box {
+                    // Softer playback lets the player hear the recording underneath their own
+                    // playing instead of being drowned out by it.
+                    Button(
+                        onClick = { volumeMenuExpanded = true },
+                        enabled = !playing,
+                        contentPadding = PaddingValues(horizontal = 9.dp, vertical = 4.dp),
+                    ) { Text(playbackVolume.formatPlaybackVolume()) }
+                    DropdownMenu(expanded = volumeMenuExpanded, onDismissRequest = { volumeMenuExpanded = false }) {
+                        listOf(0.25f, 0.4f, 0.6f, 0.8f, 1f).forEach { volume ->
+                            DropdownMenuItem(
+                                text = { Text(volume.formatPlaybackVolume()) },
+                                onClick = {
+                                    playbackVolume = volume
+                                    volumeMenuExpanded = false
+                                },
+                            )
+                        }
                     }
-                        .onFailure { playbackError = it.message ?: strings.text("Could not start practice", "Не удалось запустить обучение") }
+                }
+                Button(onClick = {
+                    // "Restart" starts the whole segment over, while "Practise"
+                    // resumes at the cursor, so scrolling to a measure and then
+                    // practising continues from there.
+                    restartPracticeFrom(if (practice == null) cursorStartTick() else null)
                 }) { Text(if (practice == null) strings.text("Practise", "Учить") else strings.text("Restart", "Заново")) }
                 Button(onClick = {
                     if (playing) {
@@ -557,7 +669,10 @@ private fun ScoreScreen(score: ScorePackage, repository: ScorePackageRepository,
                         continuousFeedback = null
                         feedbackState = null
                     } else {
-                        restartPlaybackFrom(selectedFromTick ?: 0L)
+                        // Playback starts where the measure cursor stands, so
+                        // moving it left/right picks the passage to hear instead
+                        // of always replaying from the segment's first note.
+                        restartPlaybackFrom(cursorStartTick())
                     }
                 }) { Text(if (playing) strings.text("Stop", "Стоп") else strings.text("Play", "Играть")) }
                 Text(if (hasPages) strings.pageCounter(page, score.normalPages.size) else strings.text("no pages", "нет страниц"), color = Color(0xFFB8C7D9))
@@ -805,3 +920,5 @@ private fun Float.formatPlaybackSpeed(): String = when (this) {
     1.5f -> "1,5×"
     else -> "${this}×"
 }
+
+private fun Float.formatPlaybackVolume(): String = "${(this * 100).roundToInt()}%"
