@@ -20,8 +20,10 @@ def local_name(tag: str) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("package", type=Path)
-    parser.add_argument("--target-ratio", type=float,
-                        help="optional expected score viewport width/height ratio")
+    parser.add_argument("--target-ratio", type=float, default=1.9,
+                        help="tablet score viewport width/height ratio; default: 1.9")
+    parser.add_argument("--min-width-coverage", type=float, default=0.85,
+                        help="minimum fraction of the viewport width occupied by an SVG page; default: 0.85")
     parser.add_argument("--strict", action="store_true", help="fail when warnings are found")
     args = parser.parse_args()
 
@@ -82,11 +84,23 @@ def main() -> int:
                 if "note" in classes and element.attrib.get("data-id"):
                     score_note_ids.add(element.attrib["data-id"])
 
-        if page_ratios and args.target_ratio:
-            mismatch = max(abs(ratio - args.target_ratio) / args.target_ratio for ratio in page_ratios)
-            if mismatch > 0.05:
+        if args.target_ratio <= 0:
+            errors.append("target ratio must be positive")
+        if not 0 < args.min_width_coverage <= 1:
+            errors.append("minimum width coverage must be in (0, 1]")
+        if page_ratios and args.target_ratio > 0 and 0 < args.min_width_coverage <= 1:
+            # A page wider than the viewport is harmless: it fills the width
+            # and may have a little unused vertical space.  A narrower page
+            # leaves empty bands at both sides and makes the notation too small.
+            coverage = [min(1.0, ratio / args.target_ratio) for ratio in page_ratios]
+            undersized = [
+                f"{page_names[index]} ({value:.0%})"
+                for index, value in enumerate(coverage)
+                if value < args.min_width_coverage
+            ]
+            if undersized:
                 warnings.append(
-                    f"SVG page ratio {page_ratios[0]:.3f} differs from target {args.target_ratio:.3f}"
+                    "SVG pages do not fill enough of the tablet width: " + ", ".join(undersized)
                 )
 
         linked_ids = {

@@ -169,7 +169,11 @@ def page_slices(page: int, plain: bytes, positions: list[dict], measures: list[d
         first, last = offset, offset + len(selected_y) - 1
         top = 0.0 if first == 0 else systems[first - 1]["bottom"] + 15
         if last == len(systems) - 1:
-            bottom = full_height
+            # MuseScore keeps an entire paper-sized canvas after its last
+            # system.  Keeping that tail makes a sparse final page render at
+            # a fraction of the tablet width.  Keep a small safety margin for
+            # dynamics and pedal markings, but never inherit the blank paper.
+            bottom = min(full_height, systems[last]["bottom"] + 250)
         else:
             bottom = min(systems[last]["bottom"] + 250, systems[last + 1]["y"] - 350)
         result.append((selected_positions, selected_measures, (0.0, top, width, bottom - top)))
