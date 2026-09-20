@@ -32,6 +32,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Card
@@ -351,6 +352,8 @@ private fun contextHasBluetoothPermissions(): Boolean {
 private fun ScoreScreen(score: ScorePackage, repository: ScorePackageRepository, controller: MidiController, strings: Strings, onBack: () -> Unit) {
     var page by remember { mutableStateOf(0) }
     var playing by remember { mutableStateOf(false) }
+    var playbackCountdown by remember { mutableStateOf<Int?>(null) }
+    var pendingPlaybackStartTick by remember { mutableStateOf<Long?>(null) }
     var playbackError by remember { mutableStateOf<String?>(null) }
     var practice by remember { mutableStateOf<WaitingPractice?>(null) }
     var practiceState by remember { mutableStateOf<PracticeState?>(null) }
@@ -475,12 +478,24 @@ private fun ScoreScreen(score: ScorePackage, repository: ScorePackageRepository,
             cursorStart <= (selectedToTick ?: Long.MAX_VALUE)
         return if (insideSelection) cursorStart else selectedFromTick ?: 0L
     }
+    LaunchedEffect(pendingPlaybackStartTick) {
+        val startTick = pendingPlaybackStartTick ?: return@LaunchedEffect
+        for (remaining in 2 downTo 1) {
+            playbackCountdown = remaining
+            delay(1_000L)
+        }
+        playbackCountdown = null
+        pendingPlaybackStartTick = null
+        restartPlaybackFrom(startTick)
+    }
     /**
      * Builds a fresh waiting-practice session over the selected range. A null
      * [requestedTick] starts the range over; otherwise practice continues at the
      * first expected note from that tick.
      */
     fun restartPracticeFrom(requestedTick: Long?) {
+        pendingPlaybackStartTick = null
+        playbackCountdown = null
         playback.stop()
         playing = false
         playbackState = null
@@ -523,6 +538,7 @@ private fun ScoreScreen(score: ScorePackage, repository: ScorePackageRepository,
         when {
             practice != null -> restartPracticeFrom(cursorStartTick())
             playing -> restartPlaybackFrom(cursorStartTick())
+            pendingPlaybackStartTick != null -> pendingPlaybackStartTick = cursorStartTick()
             else -> {
                 continuousFeedback = null
                 feedbackState = null
@@ -536,6 +552,10 @@ private fun ScoreScreen(score: ScorePackage, repository: ScorePackageRepository,
         when {
             practice != null -> practice!!.seekToMeasure(target.number)?.let { practiceState = it }
             playing -> restartPlaybackFrom(target.startTick)
+            pendingPlaybackStartTick != null -> {
+                browseCursorTick = timeline?.groups?.firstOrNull { it.measure == target.number }?.tick ?: target.startTick
+                pendingPlaybackStartTick = target.startTick
+            }
             else -> browseCursorTick = target.startTick
         }
     }
@@ -545,12 +565,21 @@ private fun ScoreScreen(score: ScorePackage, repository: ScorePackageRepository,
         // notes in the tapped measure.
         val target = timeline?.measures?.firstOrNull { it.number == measureNumber } ?: return@move
         val firstNoteTick = timeline.groups.firstOrNull { it.measure == target.number }?.tick
-        browseCursorTick = firstNoteTick ?: target.startTick
+        when {
+            practice != null -> practice!!.seekToMeasure(target.number)?.let { practiceState = it }
+            playing -> restartPlaybackFrom(target.startTick)
+            pendingPlaybackStartTick != null -> {
+                browseCursorTick = firstNoteTick ?: target.startTick
+                pendingPlaybackStartTick = target.startTick
+            }
+            else -> browseCursorTick = firstNoteTick ?: target.startTick
+        }
     }
     val currentMeasureIndex = timeline?.measures?.indexOfFirst { it.number == cursorMeasure } ?: -1
     val canMoveMeasure = timeline != null
     val canMoveLeft = canMoveMeasure && currentMeasureIndex > 0
     val canMoveRight = canMoveMeasure && currentMeasureIndex >= 0 && currentMeasureIndex + 1 < timeline.measures.size
+    val playModeActive = playing || pendingPlaybackStartTick != null
     Column(modifier = Modifier.fillMaxSize()) {
         Row(
             modifier = Modifier.fillMaxWidth().background(Color(0xFF101418)).padding(12.dp),
@@ -628,7 +657,7 @@ private fun ScoreScreen(score: ScorePackage, repository: ScorePackageRepository,
                 Box {
                     Button(
                         onClick = { speedMenuExpanded = true },
-                        enabled = !playing,
+                        enabled = !playModeActive,
                         contentPadding = PaddingValues(horizontal = 9.dp, vertical = 4.dp),
                     ) { Text(playbackSpeed.formatPlaybackSpeed()) }
                     DropdownMenu(expanded = speedMenuExpanded, onDismissRequest = { speedMenuExpanded = false }) {
@@ -648,7 +677,7 @@ private fun ScoreScreen(score: ScorePackage, repository: ScorePackageRepository,
                     // playing instead of being drowned out by it.
                     Button(
                         onClick = { volumeMenuExpanded = true },
-                        enabled = !playing,
+                        enabled = !playModeActive,
                         contentPadding = PaddingValues(horizontal = 9.dp, vertical = 4.dp),
                     ) { Text(playbackVolume.formatPlaybackVolume()) }
                     DropdownMenu(expanded = volumeMenuExpanded, onDismissRequest = { volumeMenuExpanded = false }) {
@@ -670,7 +699,9 @@ private fun ScoreScreen(score: ScorePackage, repository: ScorePackageRepository,
                     restartPracticeFrom(if (practice == null) cursorStartTick() else null)
                 }) { Text(if (practice == null) strings.text("Practise", "Учить") else strings.text("Restart", "Заново")) }
                 Button(onClick = {
-                    if (playing) {
+                    if (playModeActive) {
+                        pendingPlaybackStartTick = null
+                        playbackCountdown = null
                         playback.stop()
                         playing = false
                         playbackState = null
@@ -680,66 +711,73 @@ private fun ScoreScreen(score: ScorePackage, repository: ScorePackageRepository,
                         // Playback starts where the measure cursor stands, so
                         // moving it left/right picks the passage to hear instead
                         // of always replaying from the segment's first note.
-                        restartPlaybackFrom(cursorStartTick())
+                        val startTick = cursorStartTick()
+                        practice = null
+                        practiceState = null
+                        continuousFeedback = null
+                        feedbackState = null
+                        browseCursorTick = startTick
+                        pendingPlaybackStartTick = startTick
                     }
-                }) { Text(if (playing) strings.text("Stop", "Стоп") else strings.text("Play", "Играть")) }
+                }) { Text(if (playModeActive) strings.text("Stop", "Стоп") else strings.text("Play", "Играть")) }
                 Text(if (hasPages) strings.pageCounter(page, score.normalPages.size) else strings.text("no pages", "нет страниц"), color = Color(0xFFB8C7D9))
             }
         }
         if (hasPages) {
-            AndroidView(
-                modifier = Modifier.weight(1f).fillMaxWidth().clipToBounds(),
-                factory = { context -> ScoreWebView(context) },
-                update = { view ->
-                    // Tapping the printed score is a browsing action.  Do not
-                    // retarget an exercise or playback that is already running.
-                    view.onMeasureSelected = { measure ->
-                        if (practice == null && !playing) moveCursorToMeasure(measure)
-                    }
-                    val svg = runCatching { repository.pageSvg(score, page) }.getOrElse { "<svg xmlns='http://www.w3.org/2000/svg'><text x='30' y='50'>${it.message}</text></svg>" }
-                    val key = "${score.id}:$page"
-                    // ContinuousFeedback intentionally points to the next group
-                    // within its tolerance window. The score cursor must instead
-                    // stay with the group sounding now; otherwise text, colours
-                    // and the vertical line describe different notes.
-                    val displayedNotes = if (practiceState != null) {
-                        practiceState!!.expected
-                    } else {
-                        cursorGroup?.pitches.orEmpty()
-                    }
-                    val acceptedNotes = if (practiceState != null) {
-                        practiceState!!.held.intersect(practiceState!!.expected)
-                    } else {
-                        playbackState?.activePitches.orEmpty()
-                    }
-                    val expected = displayedNotes.joinToString(",")
-                    val accepted = acceptedNotes.joinToString(",")
-                    // Only currently held mistakes get synthetic red noteheads.
-                    // Expected notes are already coloured on the original score.
-                    val wrong = visibleLearningState?.wrong?.joinToString(",").orEmpty()
-                    val tickInMeasure = cursorTick?.let { tick -> cursorMeasureInfo?.let { tick - it.startTick } } ?: 0L
-                    val measureTicks = cursorMeasureInfo?.durationTicks ?: practicePpq * 4L
-                    val alignCursorToExpected = practiceState != null
-                    val occurrences = emptyMap<Int, Int>()
-                    val occurrenceScript = occurrences.entries.joinToString(",", prefix = "{", postfix = "}") { (pitch, occurrence) -> "\"$pitch\":$occurrence" }
-                    val scoreIds = cursorGroup?.scoreNoteIds.orEmpty().joinToString(",") { "'${it}'" }
-                    val scorePitches = cursorGroup?.scoreNoteIdsByPitch.orEmpty()
-                        .flatMap { (pitch, ids) -> ids.map { id -> id to pitch } }
-                        .groupBy({ (id, _) -> id }, { (_, pitch) -> pitch })
-                        .entries
-                        .joinToString(",", prefix = "{", postfix = "}") { (id, pitches) ->
-                            "'$id':[${pitches.sortedDescending().joinToString(",")}]"
+            Box(modifier = Modifier.weight(1f).fillMaxWidth().clipToBounds()) {
+                AndroidView(
+                    modifier = Modifier.fillMaxSize(),
+                    factory = { context -> ScoreWebView(context) },
+                    update = { view ->
+                        view.onMeasureSelected = moveCursorToMeasure
+                        val svg = runCatching { repository.pageSvg(score, page) }.getOrElse { "<svg xmlns='http://www.w3.org/2000/svg'><text x='30' y='50'>${it.message}</text></svg>" }
+                        val key = "${score.id}:$page"
+                        // ContinuousFeedback intentionally points to the next group
+                        // within its tolerance window. The score cursor must instead
+                        // stay with the group sounding now; otherwise text, colours
+                        // and the vertical line describe different notes.
+                        val displayedNotes = if (practiceState != null) {
+                            practiceState!!.expected
+                        } else {
+                            cursorGroup?.pitches.orEmpty()
                         }
-                    val nativePitches = fullCursorGroup?.pitches.orEmpty().joinToString(",")
-                    val nativeScoreIds = fullCursorGroup?.scoreNoteIds.orEmpty().joinToString(",") { "'${it}'" }
-                    val cursorScript = if (cursorMeasure == null) "document.querySelectorAll('.note').forEach(n=>colorNote(n,'black'));clearPracticeCursor()" else "highlightNotes($cursorMeasure,[$expected],[$accepted],[$wrong],$tickInMeasure,$measureTicks,$alignCursorToExpected,$occurrenceScript,[$scoreIds],$scorePitches,[$nativePitches],[$nativeScoreIds])"
-                    val fromTickScript = selectedFromTick?.toString() ?: "null"
-                    val toTickScript = selectedToTick?.toString() ?: "null"
-                    val measureMapScript = timeline?.measures.orEmpty().joinToString(",", prefix = "[", postfix = "]") { "{n:${it.number},s:${it.startTick},d:${it.durationTicks}}" }
-                    val script = "$cursorScript;showSelectedRange($fromTickScript,$toTickScript,$measureMapScript)"
-                    if (view.tag != key) {
-                        val inlineSvg = svg.substring(svg.indexOf("<svg").coerceAtLeast(0))
-                        val html = """<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes"><style>html,body{margin:0;background:#fff;overflow:auto}img{display:none}body>svg{display:block;width:100%;height:auto;margin:0 auto}</style></head><body>$inlineSvg<script>
+                        val acceptedNotes = if (practiceState != null) {
+                            practiceState!!.held.intersect(practiceState!!.expected)
+                        } else {
+                            playbackState?.activePitches.orEmpty()
+                        }
+                        val expected = displayedNotes.joinToString(",")
+                        val accepted = acceptedNotes.joinToString(",")
+                        // Only currently held mistakes get synthetic red noteheads.
+                        // Expected notes are already coloured on the original score.
+                        val wrong = visibleLearningState?.wrong?.joinToString(",").orEmpty()
+                        val tickInMeasure = cursorTick?.let { tick -> cursorMeasureInfo?.let { tick - it.startTick } } ?: 0L
+                        val measureTicks = cursorMeasureInfo?.durationTicks ?: practicePpq * 4L
+                        // In both learning modes, place the line on the engraved
+                        // note itself. A proportional position across the whole
+                        // measure starts too far left when the measure begins with
+                        // accidentals or other notation that takes horizontal space.
+                        val alignCursorToExpected = practiceState != null || playbackState != null
+                        val occurrences = emptyMap<Int, Int>()
+                        val occurrenceScript = occurrences.entries.joinToString(",", prefix = "{", postfix = "}") { (pitch, occurrence) -> "\"$pitch\":$occurrence" }
+                        val scoreIds = cursorGroup?.scoreNoteIds.orEmpty().joinToString(",") { "'${it}'" }
+                        val scorePitches = cursorGroup?.scoreNoteIdsByPitch.orEmpty()
+                            .flatMap { (pitch, ids) -> ids.map { id -> id to pitch } }
+                            .groupBy({ (id, _) -> id }, { (_, pitch) -> pitch })
+                            .entries
+                            .joinToString(",", prefix = "{", postfix = "}") { (id, pitches) ->
+                                "'$id':[${pitches.sortedDescending().joinToString(",")}]"
+                            }
+                        val nativePitches = fullCursorGroup?.pitches.orEmpty().joinToString(",")
+                        val nativeScoreIds = fullCursorGroup?.scoreNoteIds.orEmpty().joinToString(",") { "'${it}'" }
+                        val cursorScript = if (cursorMeasure == null) "document.querySelectorAll('.note').forEach(n=>colorNote(n,'black'));clearPracticeCursor()" else "highlightNotes($cursorMeasure,[$expected],[$accepted],[$wrong],$tickInMeasure,$measureTicks,$alignCursorToExpected,$occurrenceScript,[$scoreIds],$scorePitches,[$nativePitches],[$nativeScoreIds])"
+                        val fromTickScript = selectedFromTick?.toString() ?: "null"
+                        val toTickScript = selectedToTick?.toString() ?: "null"
+                        val measureMapScript = timeline?.measures.orEmpty().joinToString(",", prefix = "[", postfix = "]") { "{n:${it.number},s:${it.startTick},d:${it.durationTicks}}" }
+                        val script = "$cursorScript;showSelectedRange($fromTickScript,$toTickScript,$measureMapScript)"
+                        if (view.tag != key) {
+                            val inlineSvg = svg.substring(svg.indexOf("<svg").coerceAtLeast(0))
+                            val html = """<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes"><style>html,body{margin:0;background:#fff;overflow:auto}img{display:none}body>svg{display:block;width:100%;height:auto;margin:0 auto}</style></head><body>$inlineSvg<script>
 function midiPitch(n){const b={c:0,d:2,e:4,f:5,g:7,a:9,b:11};let p=(parseInt(n.dataset.oct)+1)*12+b[n.dataset.pname];const a=n.dataset.accid||n.dataset.accidGes||'';if(a==='s'||a==='ss')p+=a==='ss'?2:1;if(a==='f'||a==='ff')p-=a==='ff'?2:1;return p}
 function cropScorePage(){const root=document.body.querySelector(':scope > svg');if(!root||root.dataset.cropped==='true'||!root.viewBox)return;const footers=[...root.querySelectorAll('.pgFoot')];footers.forEach(footer=>footer.remove());if(!footers.length){root.dataset.cropped='false';return}const systems=[...root.querySelectorAll('.system')];const box=root.viewBox.baseVal;const rootRect=root.getBoundingClientRect();if(!systems.length||!box.width||!box.height||!rootRect.height)return;const originalHeight=box.height;const bottom=Math.max(...systems.map(system=>system.getBoundingClientRect().bottom));const bottomInViewBox=box.y+(bottom-rootRect.top)*originalHeight/rootRect.height;const padding=Math.max(50,box.width*0.018);const stablePageFloor=originalHeight*0.81;const croppedHeight=Math.min(originalHeight,Math.max(stablePageFloor,bottomInViewBox+padding-box.y));const inner=root.querySelector('svg.definition-scale');if(inner&&inner.viewBox&&inner.viewBox.baseVal.height){const innerBox=inner.viewBox.baseVal;const innerHeight=innerBox.height*croppedHeight/originalHeight;inner.setAttribute('viewBox',innerBox.x+' '+innerBox.y+' '+innerBox.width+' '+innerHeight)}root.dataset.originalViewBoxHeight=String(originalHeight);root.setAttribute('viewBox',box.x+' '+box.y+' '+box.width+' '+croppedHeight);root.dataset.cropped='true';root.dataset.croppedViewBoxHeight=String(croppedHeight)}
 function fitScorePage(){const root=document.body.querySelector(':scope > svg');if(!root||!root.viewBox)return;const box=root.viewBox.baseVal;if(!box.width||!box.height)return;const width=innerWidth;const height=innerHeight;const renderedWidth=Math.min(width,height*box.width/box.height);root.style.width=renderedWidth+'px';root.style.height='auto';PianoTrainerBridge.reportVisualDiagnostic(JSON.stringify({layout:{viewportWidth:width,viewportHeight:height,viewBoxWidth:box.width,viewBoxHeight:box.height,renderedWidth:renderedWidth,renderedHeight:renderedWidth*box.height/box.width}}))}
@@ -771,13 +809,31 @@ addEventListener('resize',fitScorePage);cropScorePage();fitScorePage();PianoTrai
                     } else {
                         view.applyPracticeScript(script)
                     }
-                },
-            )
+                    },
+                )
+                playbackCountdown?.let { remaining ->
+                    Box(
+                        modifier = Modifier.fillMaxSize().background(Color(0x66000000)),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            remaining.toString(),
+                            color = Color.White,
+                            style = MaterialTheme.typography.displayLarge,
+                        )
+                    }
+                }
+            }
             Row(
                 modifier = Modifier.fillMaxWidth().background(Color(0xFFF7F5F0)).padding(horizontal = 12.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Button(onClick = { page-- }, enabled = page > 0) { Text(strings.text("Previous", "Назад")) }
+                Spacer(Modifier.width(8.dp))
+                Button(onClick = {
+                    page = 0
+                    timeline?.measures?.firstOrNull()?.let { moveCursorToMeasure(it.number) }
+                }) { Text(strings.text("Begin", "Начало")) }
                 Box(
                     modifier = Modifier.weight(1f).padding(horizontal = 12.dp),
                     contentAlignment = Alignment.Center,

@@ -22,7 +22,7 @@ All product UI is available in English by default (Russian can be selected insid
 ![English score and practice screen on Samsung SM-X230](docs/images/piano-practice-en.png)
 
 *Score screen: choose hands, speed and playback volume, then use **Practise** or **Play**. Move the cursor
-with **←** and **→**, and mark a range of measures with **[** and **]**.*
+by tapping a measure or with **←** and **→**, and mark a range with **[** and **]**.*
 
 ![English score library on Samsung SM-X230](docs/images/piano-library-en.png)
 
@@ -108,8 +108,11 @@ Use `--serial <adb-serial>` if more than one device is connected. The installer 
 Then select **MIDI** to connect the piano via USB, or allow Nearby devices and use **Scan Bluetooth MIDI**. Open a score, choose a hand, a speed and a playback volume, and:
 
 - select **Practise** — the cursor waits until you play the expected note or chord;
-- select **Play** — the score plays through the connected MIDI device while the cursor advances;
-- practise or play a smaller range of measures: move the cursor with **←** and **→** at the
+- select **Play** — a visible two-second countdown gives you time to put your hands on the piano,
+  then the score plays through the connected MIDI device while the cursor advances;
+- move the cursor by tapping a measure or with **←** and **→**, including while Practise or Play is active;
+- use **Begin** to return to the first page and first measure;
+- practise or play a smaller range of measures: move the cursor at the
   bottom of the screen, press **[** on the measure that starts the range, move on to the
   measure that ends it and press **]**. Pressing both on the same measure selects that single
   measure, and **Reset** clears the range. Practise and Play both loop over the selection.
