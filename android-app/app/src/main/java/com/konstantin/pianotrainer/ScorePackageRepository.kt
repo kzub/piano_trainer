@@ -4,8 +4,15 @@ import android.content.Context
 import android.net.Uri
 import org.json.JSONObject
 import java.io.File
+import java.io.StringReader
 import java.security.MessageDigest
 import java.util.zip.ZipFile
+import javax.xml.XMLConstants
+import javax.xml.parsers.DocumentBuilderFactory
+import org.w3c.dom.Element
+import org.w3c.dom.Node
+import org.xml.sax.InputSource
+import org.xml.sax.helpers.DefaultHandler
 
 data class ScorePackage(
     val id: String,
@@ -24,8 +31,19 @@ data class PracticeTimeline(
     val ppq: Int,
     val measures: List<ScoreMeasure>,
     val groups: List<ExpectedGroup>,
+    val keySignaturesByMeasure: Map<Int, Int> = emptyMap(),
 ) {
     fun measureAt(tick: Long): ScoreMeasure? = measures.lastOrNull { it.startTick <= tick }
+
+    fun keyFifthsAt(measure: Int?): Int {
+        if (measure == null) return 0
+        return keySignaturesByMeasure.entries
+            .filter { (number, _) -> number <= measure }
+            .maxByOrNull { (number, _) -> number }
+            ?.value
+            ?: keySignaturesByMeasure.minByOrNull { (number, _) -> number }?.value
+            ?: 0
+    }
 }
 
 class ScorePackageRepository(private val context: Context) {
@@ -78,6 +96,17 @@ class ScorePackageRepository(private val context: Context) {
     fun practiceTimeline(score: ScorePackage): PracticeTimeline = ZipFile(score.file).use { archive ->
         val entry = archive.getEntry("mapping.json") ?: error("В пакете нет MIDI mapping")
         val mapping = archive.getInputStream(entry).bufferedReader().use { JSONObject(it.readText()) }
+        val manifestEntry = archive.getEntry("manifest.json")
+        val scoreEntryName = manifestEntry?.let { manifestFile ->
+            archive.getInputStream(manifestFile).bufferedReader().use { JSONObject(it.readText()).optString("score") }
+        }
+        val keySignatures = scoreEntryName
+            ?.takeIf(String::isNotBlank)
+            ?.let(archive::getEntry)
+            ?.let { scoreEntry ->
+                archive.getInputStream(scoreEntry).bufferedReader().use { extractKeySignaturesByMeasure(it.readText()) }
+            }
+            .orEmpty()
         val events = mapping.getJSONArray("events")
         val eventList = List(events.length()) { index -> events.getJSONObject(index) }
         val sourceHands = if (mapping.optString("kind") == "timeline-only") {
@@ -141,6 +170,7 @@ class ScorePackageRepository(private val context: Context) {
                     value.leftScoreNoteIdsByPitch, value.rightScoreNoteIdsByPitch,
                 )
             }.sortedWith(compareBy<ExpectedGroup> { it.tick }.thenBy { it.id }),
+            keySignaturesByMeasure = keySignatures,
         )
     }
 
@@ -186,6 +216,50 @@ class ScorePackageRepository(private val context: Context) {
         }
         return digest.digest().joinToString("") { byte -> "%02x".format(byte) }
     }
+}
+
+/** Key signatures are read from the existing MusicXML without rewriting the score package. */
+internal fun extractKeySignaturesByMeasure(musicXml: String): Map<Int, Int> {
+    return runCatching {
+        val factory = DocumentBuilderFactory.newInstance().apply { isNamespaceAware = true }
+        listOf(
+            XMLConstants.FEATURE_SECURE_PROCESSING to true,
+            "http://xml.org/sax/features/external-general-entities" to false,
+            "http://xml.org/sax/features/external-parameter-entities" to false,
+            "http://apache.org/xml/features/nonvalidating/load-external-dtd" to false,
+        ).forEach { (feature, value) -> runCatching { factory.setFeature(feature, value) } }
+        runCatching { factory.isXIncludeAware = false }
+        runCatching { factory.isExpandEntityReferences = false }
+        val builder = factory.newDocumentBuilder().apply {
+            // MusicXML exports commonly contain a remote DTD. The score uses no
+            // DTD entities here, so resolve it as empty and keep parsing offline.
+            setEntityResolver { _, _ -> InputSource(StringReader("")) }
+            setErrorHandler(DefaultHandler())
+        }
+        val document = builder.parse(InputSource(StringReader(musicXml)))
+        val firstPart = elements(document.documentElement, "part").firstOrNull() ?: return@runCatching emptyMap()
+        val signatures = linkedMapOf<Int, Int>()
+        var currentFifths = 0
+        elements(firstPart, "measure").forEach { measure ->
+            val number = measure.getAttribute("number").toIntOrNull() ?: return@forEach
+            elements(measure, "attributes").forEach { attributes ->
+                elements(attributes, "key").forEach { key ->
+                    elements(key, "fifths").firstOrNull()?.textContent?.trim()?.toIntOrNull()?.let {
+                        currentFifths = it.coerceIn(-7, 7)
+                    }
+                }
+            }
+            signatures[number] = currentFifths
+        }
+        signatures
+    }.getOrDefault(emptyMap())
+}
+
+private fun elements(parent: Node, localName: String): List<Element> {
+    val children = parent.childNodes
+    return (0 until children.length)
+        .mapNotNull { children.item(it) as? Element }
+        .filter { element -> (element.localName ?: element.tagName.substringAfter(':')) == localName }
 }
 
 private data class PracticeGroupBuilder(

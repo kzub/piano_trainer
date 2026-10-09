@@ -41,15 +41,15 @@ class Strings(private val language: AppLanguage) {
     fun completed(total: Int) = text("Complete: $total positions played", "Готово: $total позиций сыграно")
     fun score(correct: Int, total: Int) = text("Score $correct/$total", "Оценка $correct/$total")
     fun mistake(notes: String) = text("Mistake: $notes", "Ошибка: $notes")
-    fun clefStatus(label: String, expected: Set<Int>, accepted: Set<Int>): String {
+    fun clefStatus(label: String, expected: Set<Int>, accepted: Set<Int>, keyFifths: Int = 0): String {
         if (expected.isEmpty()) return "$label: —"
         val correct = expected.intersect(accepted).sorted()
         val remaining = expected.minus(accepted).sorted()
         return buildString {
             append("$label: ")
-            if (correct.isNotEmpty()) append(text("correct ", "верно ") + correct.joinToString(" ", transform = ::midiSolfegeName))
+            if (correct.isNotEmpty()) append(text("correct ", "верно ") + correct.joinToString(" ") { midiSolfegeName(it, keyFifths) })
             if (correct.isNotEmpty() && remaining.isNotEmpty()) append("; ")
-            if (remaining.isNotEmpty()) append(text("waiting for ", "ожидается ") + remaining.joinToString(" ", transform = ::midiSolfegeName))
+            if (remaining.isNotEmpty()) append(text("waiting for ", "ожидается ") + remaining.joinToString(" ") { midiSolfegeName(it, keyFifths) })
             if (remaining.isEmpty()) append(text("done", "готово"))
         }
     }

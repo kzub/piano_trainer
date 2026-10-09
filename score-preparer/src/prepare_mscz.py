@@ -25,11 +25,21 @@ PPQ = 480
 SVG_NS = "http://www.w3.org/2000/svg"
 
 
-def run_musescore(executable: str, arguments: list[str], output: Path) -> None:
-    with output.open("wb") as stream:
-        result = subprocess.run([executable, *arguments], stdout=stream, stderr=subprocess.PIPE)
-    if result.returncode:
-        raise RuntimeError(result.stderr.decode(errors="replace").strip() or "MuseScore failed")
+def run_musescore(executable: str, arguments: list[str], output: Path, attempts: int = 5) -> None:
+    # MuseScore 4.7 sometimes aborts during shutdown ("mutex lock failed") after
+    # a successful export, so retry the whole command a few times.
+    for _ in range(attempts):
+        with output.open("wb") as stream:
+            result = subprocess.run([executable, *arguments], stdout=stream, stderr=subprocess.PIPE)
+        if not result.returncode:
+            return
+    raise RuntimeError(result.stderr.decode(errors="replace").strip() or "MuseScore failed")
+
+
+def beat_key(value: float) -> float:
+    # MuseScore reports beats in single precision (3.6666665 for a triplet),
+    # so compare beats at a precision both sides agree on.
+    return round(float(value), 4)
 
 
 def decode(value: str) -> bytes:
@@ -214,7 +224,7 @@ def make_midi(events: list[dict], tempo: int) -> bytes:
 
 
 def score_slots(elements: list[dict], position_count: int) -> list[tuple[int, float]]:
-    keys = sorted({(int(item["measureIdx"]), float(item["beat"])) for item in elements
+    keys = sorted({(int(item["measureIdx"]), beat_key(item["beat"])) for item in elements
                    if item.get("type") in {"Note", "Chord", "Rest"}})
     if len(keys) != position_count:
         raise ValueError(f"semantic/position segment mismatch: {len(keys)} vs {position_count}")
@@ -237,7 +247,7 @@ def make_practice(musicxml: Path, elements: list[dict], positions: list[dict]) -
         event = unique.get(key)
         if event is None:
             idx = measure_index[note.measure]
-            beat = round((note.on_tick - measures[idx]["startTick"]) / PPQ, 6)
+            beat = beat_key((note.on_tick - measures[idx]["startTick"]) / PPQ)
             segment_ids = segments_by_key.get((idx, beat), [])
             if not segment_ids:
                 raise ValueError(f"no rendered segment for measure {note.measure}, beat {beat}")
@@ -298,7 +308,7 @@ def convert(source: Path, output: Path, executable: str) -> dict:
         musicxml_path = temp / "score.musicxml"
         musicxml_path.write_bytes(musicxml)
         positions, position_events = position_data(decode(media["sposXML"]))
-        semantic_position_count = len({(int(item["measureIdx"]), float(item["beat"]))
+        semantic_position_count = len({(int(item["measureIdx"]), beat_key(item["beat"]))
                                        for item in piano_sets[0]["elements"]
                                        if item.get("type") in {"Note", "Chord", "Rest"}})
         # MuseScore's spos export may finish with a playback boundary that has
