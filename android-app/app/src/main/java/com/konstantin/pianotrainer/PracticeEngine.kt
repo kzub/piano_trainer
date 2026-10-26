@@ -83,8 +83,17 @@ data class PracticeState(
 class WaitingPractice(
     private val groups: List<ExpectedGroup>,
     private val attemptWindowMillis: Long = 250L,
+    fromTick: Long = Long.MIN_VALUE,
+    toTick: Long = Long.MAX_VALUE,
 ) {
-    private var index = 0
+    // Keep the whole score available for manual navigation. Only automatic
+    // progression is bounded by the repeat range.
+    private val loopStart = groups.indexOfFirst { it.tick >= fromTick && it.tick <= toTick }
+    private val loopEnd = groups.indexOfLast { it.tick >= fromTick && it.tick <= toTick } + 1
+    init {
+        require(loopStart >= 0) { "There are no notes to practise in the selected measures" }
+    }
+    private var index = loopStart
     private val accepted = linkedSetOf<Int>()
     private val attempted = linkedSetOf<Int>()
     private val held = linkedSetOf<Int>()
@@ -132,7 +141,7 @@ class WaitingPractice(
             attemptStartedAt = null
             // Waiting practice is a loop, not a terminal exercise. This also
             // naturally restarts a user-selected segment at its own first note.
-            if (index == groups.size) index = 0
+            if (index >= loopEnd) index = loopStart
         }
         return state()
     }
@@ -168,8 +177,8 @@ class WaitingPractice(
         val group = groups.getOrNull(index)
         val expected = group?.pitches.orEmpty()
         return PracticeState(
-            completed = index,
-            total = groups.size,
+            completed = (index - loopStart).coerceIn(0, loopEnd - loopStart - 1),
+            total = loopEnd - loopStart,
             expected = expected,
             expectedLeft = group?.leftPitches.orEmpty(),
             expectedRight = group?.rightPitches.orEmpty(),

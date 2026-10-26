@@ -508,14 +508,12 @@ private fun ScoreScreen(score: ScorePackage, repository: ScorePackageRepository,
             val scoreTimeline = practiceData.getOrThrow()
             practicePpq = scoreTimeline.ppq
             val selected = scoreTimeline.groups.asSequence()
-                .filter { group ->
-                    group.tick >= (selectedFromTick ?: Long.MIN_VALUE) &&
-                        group.tick <= (selectedToTick ?: Long.MAX_VALUE)
-                }
                 .mapNotNull(practiceHands::select)
                 .toList()
-            require(selected.isNotEmpty()) { strings.text("There are no notes to practise in the selected measures", "В выбранных тактах нет нот для обучения") }
-            WaitingPractice(selected)
+            val fromTick = selectedFromTick ?: Long.MIN_VALUE
+            val toTick = selectedToTick ?: Long.MAX_VALUE
+            require(selected.any { it.tick in fromTick..toTick }) { strings.text("There are no notes to practise in the selected measures", "В выбранных тактах нет нот для обучения") }
+            WaitingPractice(selected, fromTick = fromTick, toTick = toTick)
         }.onSuccess { engine ->
             practice = engine
             practiceState = requestedTick?.let(engine::seekToTick) ?: engine.current()

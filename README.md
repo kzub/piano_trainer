@@ -116,6 +116,8 @@ Then select **MIDI** to connect the piano via USB, or allow Nearby devices and u
   bottom of the screen, press **[** on the measure that starts the range, move on to the
   measure that ends it and press **]**. Pressing both on the same measure selects that single
   measure, and **Reset** clears the range. Practise and Play both loop over the selection.
+  In Practise, you can move the cursor beyond either boundary and press **[** or **]**
+  again to expand or narrow the active range without resetting it.
 
 ## Do the same with an agent
 
