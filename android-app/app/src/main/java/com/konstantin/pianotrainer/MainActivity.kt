@@ -179,9 +179,8 @@ private fun PianoTrainerApp(repository: ScorePackageRepository) {
         }
     }
     LaunchedEffect(midiController) {
-        if (bluetoothPermissionsGranted) {
-            midiController.reconnectLastDevice()
-        } else {
+        midiController.reconnectLastDevice()
+        if (!bluetoothPermissionsGranted) {
             bluetoothPermissions.launch(arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT))
         }
     }
@@ -308,7 +307,7 @@ private fun MidiSettingsScreen(controller: MidiController, strings: Strings, onB
         ) {
             Button(onClick = onBack) { Text(strings.text("Back", "Назад")) }
             Text("MIDI", color = Color.White, style = MaterialTheme.typography.titleLarge)
-            Button(onClick = { controller.closeConnection(); status = strings.text("MIDI disconnected", "MIDI отключено") }) { Text(strings.text("Disconnect", "Отключить")) }
+            Button(onClick = { controller.closeConnection() }) { Text(strings.text("Reconnect", "Переподключить")) }
         }
         Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text(status, style = MaterialTheme.typography.bodyLarge)
@@ -324,10 +323,10 @@ private fun MidiSettingsScreen(controller: MidiController, strings: Strings, onB
                 Button(onClick = { endpoints = controller.systemDevices() }) { Text(strings.text("Refresh USB MIDI", "Обновить USB MIDI")) }
             }
             Text("Bluetooth MIDI", style = MaterialTheme.typography.titleMedium)
-            if (bluetoothDevices.isEmpty()) Text(strings.text("Tap “Scan Bluetooth MIDI”, then enable Bluetooth MIDI mode on the FP‑30.", "Нажмите «Искать Bluetooth MIDI», затем включите на FP‑30 режим Bluetooth MIDI."))
+            if (bluetoothDevices.isEmpty()) Text(strings.text("Searching automatically. Enable Bluetooth MIDI on the piano. Select a new piano once to remember it.", "Поиск идёт автоматически. Включите Bluetooth MIDI на пианино. Новое пианино нужно выбрать один раз."))
             bluetoothDevices.forEach { device ->
                 Card(Modifier.fillMaxWidth().clickable { controller.openBluetooth(device) }) {
-                    Text(device.name ?: "Bluetooth MIDI", Modifier.padding(16.dp))
+                    Text(device.midiDisplayName() ?: "Bluetooth MIDI", Modifier.padding(16.dp))
                 }
             }
             Text(strings.text("System USB / MIDI devices", "Системные USB / MIDI-устройства"), style = MaterialTheme.typography.titleMedium)
