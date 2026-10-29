@@ -140,6 +140,7 @@ class ScorePackageRepository(private val context: Context) {
                 PracticeGroupBuilder(tick = tick, measure = event.optInt("measure").takeIf { it > 0 })
             }
             require(group.tick == tick) { "Ожидаемая группа $id содержит разные моменты времени" }
+            group.endTick = maxOf(group.endTick, event.optLong("offTick", tick + 1))
             val pitch = event.getInt("pitch")
             val source = if (event.has("track") && event.has("channel")) {
                 MidiSource(event.getInt("track"), event.getInt("channel"))
@@ -167,7 +168,7 @@ class ScorePackageRepository(private val context: Context) {
                 ExpectedGroup(
                     id, value.tick, value.left, value.right, value.measure,
                     value.leftScoreNoteIds, value.rightScoreNoteIds,
-                    value.leftScoreNoteIdsByPitch, value.rightScoreNoteIdsByPitch,
+                    value.leftScoreNoteIdsByPitch, value.rightScoreNoteIdsByPitch, value.endTick,
                 )
             }.sortedWith(compareBy<ExpectedGroup> { it.tick }.thenBy { it.id }),
             keySignaturesByMeasure = keySignatures,
@@ -264,6 +265,7 @@ private fun elements(parent: Node, localName: String): List<Element> {
 
 private data class PracticeGroupBuilder(
     val tick: Long,
+    var endTick: Long = tick + 1,
     val measure: Int?,
     val left: MutableSet<Int> = linkedSetOf(),
     val right: MutableSet<Int> = linkedSetOf(),

@@ -13,7 +13,7 @@ The project is designed for a Samsung SM-X230 tablet and a Roland FP-30, but use
 - Connects to USB MIDI and Bluetooth LE MIDI keyboards.
 - Plays the learning MIDI through the connected instrument.
 - Waits for the right notes in **Practise** mode and marks mistakes.
-- Supports left hand, right hand, or both hands; speed and playback-volume control; and a selected range of measures.
+- Supports left hand, right hand, or both hands; speed and playback-volume control; and a selected range of notes or measures.
 
 ## Screens
 
@@ -22,7 +22,7 @@ All product UI is available in English by default (Russian can be selected insid
 ![English score and practice screen on Samsung SM-X230](docs/images/piano-practice-en.png)
 
 *Score screen: choose hands, speed and playback volume, then use **Practise** or **Play**. Move the cursor
-by tapping a measure or with **←** and **→**, and mark a range with **[** and **]**.*
+by tapping a note or moving between measures with **←** and **→**, and mark a range with **[** and **]**.*
 
 ![English score library on Samsung SM-X230](docs/images/piano-library-en.png)
 
@@ -110,14 +110,17 @@ Then select **MIDI** to connect the piano via USB, or allow Nearby devices and u
 - select **Practise** — the cursor waits until you play the expected note or chord;
 - select **Play** — a visible two-second countdown gives you time to put your hands on the piano,
   then the score plays through the connected MIDI device while the cursor advances;
-- move the cursor by tapping a measure or with **←** and **→**, including while Practise or Play is active;
+- move the cursor by tapping a note or moving between measures with **←** and **→**, including while Practise or Play is active;
 - use **Begin** to return to the first page and first measure;
-- practise or play a smaller range of measures: move the cursor at the
-  bottom of the screen, press **[** on the measure that starts the range, move on to the
-  measure that ends it and press **]**. Pressing both on the same measure selects that single
-  measure, and **Reset** clears the range. Practise and Play both loop over the selection.
-  In Practise, you can move the cursor beyond either boundary and press **[** or **]**
-  again to expand or narrow the active range without resetting it.
+- select an exact fragment: tap its first note and press **[**, then tap its last note and
+  press **]**. Both notes are included; simultaneous notes form one chord. Tap the notation to choose an exact note; the bottom **←**
+  and **→** buttons move between whole measures. Setting both boundaries on the
+  same note selects just that note or chord. Either boundary may be left open;
+- to select whole measures, tap empty space inside a measure, then
+  set **[** / **]**. The selection is shaded with visible brackets. **Reset** clears it. Practise and Play loop over the same range;
+- the final selected note sounds for its duration, capped at the next onset; notes and
+  sustain are released at the Play loop boundary. A tied continuation selects its original attack.
+
 
 ## Do the same with an agent
 

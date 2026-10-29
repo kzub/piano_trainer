@@ -10,6 +10,7 @@ data class ExpectedGroup(
     val rightScoreNoteIds: Set<String> = emptySet(),
     val leftScoreNoteIdsByPitch: Map<Int, Set<String>> = emptyMap(),
     val rightScoreNoteIdsByPitch: Map<Int, Set<String>> = emptyMap(),
+    val endTick: Long = tick + 1,
 ) {
     val pitches: Set<Int> = leftPitches + rightPitches
     val scoreNoteIds: Set<String> = leftScoreNoteIds + rightScoreNoteIds

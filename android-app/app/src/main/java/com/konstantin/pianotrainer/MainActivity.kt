@@ -125,6 +125,7 @@ private fun MidiButton(state: MidiConnectionState, onClick: () -> Unit) {
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (BuildConfig.DEBUG) WebView.setWebContentsDebuggingEnabled(true)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         enterFullscreen()
         setContent {
@@ -370,6 +371,20 @@ private fun ScoreScreen(score: ScorePackage, repository: ScorePackageRepository,
     var practicePpq by remember { mutableStateOf(initialPpq) }
     var selectedFromTick by remember { mutableStateOf<Long?>(null) }
     var selectedToTick by remember { mutableStateOf<Long?>(null) }
+    var selectedFromIsNote by remember { mutableStateOf(false) }
+    var selectedToIsNote by remember { mutableStateOf(false) }
+    var exactCursor by remember { mutableStateOf(false) }
+    val scoreSelectionHelpers = remember(context) {
+        context.assets.open("score-selection.js").bufferedReader().use { it.readText() }
+    }
+    val selectionMap = remember(practiceData) {
+        org.json.JSONArray().apply {
+            practiceData.getOrNull()?.groups?.forEach { group ->
+                put(org.json.JSONObject().put("tick", group.tick).put("measure", group.measure)
+                    .put("ids", org.json.JSONArray(group.scoreNoteIds.toList())))
+            }
+        }.toString()
+    }
     val initialBrowseTick = practiceData.getOrNull()?.let { t -> t.groups.firstOrNull()?.tick ?: t.measures.firstOrNull()?.startTick }
     var browseCursorTick by remember(score.id) { mutableStateOf(initialBrowseTick) }
     var practiceHands by remember { mutableStateOf(PracticeHands.BOTH) }
@@ -434,6 +449,7 @@ private fun ScoreScreen(score: ScorePackage, repository: ScorePackageRepository,
             val scoreTimeline = practiceData.getOrThrow()
             practicePpq = scoreTimeline.ppq
             val startTick = maxOf(requestedTick, selectedFromTick ?: 0L)
+            browseCursorTick = startTick
             val groups = scoreTimeline.groups
             val selectedGroups = groups.asSequence()
                 .filter { group ->
@@ -447,7 +463,7 @@ private fun ScoreScreen(score: ScorePackage, repository: ScorePackageRepository,
             }
             continuousFeedback = ContinuousFeedback(selectedGroups, toleranceTicks = practicePpq / 2L)
             feedbackState = continuousFeedback!!.playbackTick(startTick)
-            val untilTick = selectedToTick?.let { end -> groups.firstOrNull { it.tick > end }?.tick }
+            val untilTick = selectionEndTick(groups, selectedToTick, selectedToIsNote)
             playback.play(
                 repository.sourceMidi(score),
                 fromTick = startTick,
@@ -472,15 +488,10 @@ private fun ScoreScreen(score: ScorePackage, repository: ScorePackageRepository,
             playbackError = null
         }.onFailure { playbackError = it.message ?: strings.text("Could not start MIDI playback", "Не удалось запустить MIDI") }
     }
-    // The cursor selects whole measures, so a session resumes at the start of the
-    // measure it sits on. A cursor outside the selected range would leave nothing
-    // to play, so it falls back to the beginning of that range.
-    fun cursorStartTick(): Long {
-        val cursorStart = cursorMeasureInfo?.startTick ?: browseCursorTick ?: return selectedFromTick ?: 0L
-        val insideSelection = cursorStart >= (selectedFromTick ?: Long.MIN_VALUE) &&
-            cursorStart <= (selectedToTick ?: Long.MAX_VALUE)
-        return if (insideSelection) cursorStart else selectedFromTick ?: 0L
-    }
+    fun cursorStartTick(): Long = sessionStartTick(
+        if (exactCursor) cursorTick else cursorMeasureInfo?.startTick ?: browseCursorTick,
+        selectedFromTick, selectedToTick,
+    )
     LaunchedEffect(pendingPlaybackStartTick) {
         val startTick = pendingPlaybackStartTick ?: return@LaunchedEffect
         for (remaining in 2 downTo 1) {
@@ -546,25 +557,12 @@ private fun ScoreScreen(score: ScorePackage, repository: ScorePackageRepository,
             }
         }
     }
-    val moveCursorByMeasure: (Int) -> Unit = move@ { delta ->
-        val measures = timeline?.measures.orEmpty()
-        val currentIndex = measures.indexOfFirst { it.number == cursorMeasure }
-        val target = measures.getOrNull(currentIndex + delta) ?: return@move
-        when {
-            practice != null -> practice!!.seekToMeasure(target.number)?.let { practiceState = it }
-            playing -> restartPlaybackFrom(target.startTick)
-            pendingPlaybackStartTick != null -> {
-                browseCursorTick = timeline?.groups?.firstOrNull { it.measure == target.number }?.tick ?: target.startTick
-                pendingPlaybackStartTick = target.startTick
-            }
-            else -> browseCursorTick = target.startTick
-        }
-    }
     val moveCursorToMeasure: (Int) -> Unit = move@ { measureNumber ->
         // A tap should land on audible material rather than the beginning of a
         // leading rest.  This also makes the cursor line up with the first
         // notes in the tapped measure.
         val target = timeline?.measures?.firstOrNull { it.number == measureNumber } ?: return@move
+        exactCursor = false
         val firstNoteTick = timeline.groups.firstOrNull { it.measure == target.number }?.tick
         when {
             practice != null -> practice!!.seekToMeasure(target.number)?.let { practiceState = it }
@@ -576,10 +574,43 @@ private fun ScoreScreen(score: ScorePackage, repository: ScorePackageRepository,
             else -> browseCursorTick = firstNoteTick ?: target.startTick
         }
     }
+    val moveCursorToNote: (Long) -> Unit = move@ { tick ->
+        val target = timeline?.groups?.firstOrNull { it.tick == tick } ?: return@move
+        exactCursor = true
+        browseCursorTick = target.tick
+        when {
+            practice != null -> {
+                // A boundary may be on the other hand. Keep the exact browse
+                // position rather than silently snapping to a different note.
+                if (practiceHands.select(target) == null) {
+                    practice = null
+                    practiceState = null
+                } else practice!!.seekToTick(target.tick)?.let { practiceState = it }
+            }
+            playing -> {
+                if (tick >= (selectedFromTick ?: 0L) && tick <= (selectedToTick ?: Long.MAX_VALUE)) {
+                    restartPlaybackFrom(tick)
+                } else {
+                    playback.stop()
+                    playing = false
+                    playbackState = null
+                    continuousFeedback = null
+                    feedbackState = null
+                }
+            }
+            pendingPlaybackStartTick != null -> pendingPlaybackStartTick = sessionStartTick(tick, selectedFromTick, selectedToTick)
+        }
+        target.measure?.let { repository.pageForMeasure(score, it)?.let { targetPage -> page = targetPage } }
+    }
+    val moveCursorByMeasure: (Int) -> Unit = move@ { delta ->
+        val measures = timeline?.measures.orEmpty()
+        val currentIndex = measures.indexOfFirst { it.number == cursorMeasure }
+        val target = measures.getOrNull(currentIndex + delta) ?: return@move
+        moveCursorToMeasure(target.number)
+    }
     val currentMeasureIndex = timeline?.measures?.indexOfFirst { it.number == cursorMeasure } ?: -1
-    val canMoveMeasure = timeline != null
-    val canMoveLeft = canMoveMeasure && currentMeasureIndex > 0
-    val canMoveRight = canMoveMeasure && currentMeasureIndex >= 0 && currentMeasureIndex + 1 < timeline.measures.size
+    val canMoveLeft = currentMeasureIndex > 0
+    val canMoveRight = currentMeasureIndex >= 0 && currentMeasureIndex + 1 < timeline!!.measures.size
     val playModeActive = playing || pendingPlaybackStartTick != null
     Column(modifier = Modifier.fillMaxSize()) {
         Row(
@@ -593,16 +624,13 @@ private fun ScoreScreen(score: ScorePackage, repository: ScorePackageRepository,
             }
             Text(score.title, color = Color.White, style = MaterialTheme.typography.titleMedium)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                // The cursor selects whole measures, so both ends snap to the
-                // bounds of the measure it sits on. "]" must close the range on
-                // the last tick of that measure: ending it on the measure's own
-                // start tick would leave the measure out and pull in only the
-                // first note of it, which then sounded past the selection.
                 Button(
                     onClick = {
                         cursorMeasureInfo?.let { measure ->
-                            selectedFromTick = measure.startTick
-                            if (selectedToTick != null && measure.startTick > selectedToTick!!) selectedToTick = null
+                            val tick = if (exactCursor) cursorTick ?: measure.startTick else measure.startTick
+                            selectedFromTick = tick
+                            selectedFromIsNote = exactCursor
+                            if (selectedToTick != null && tick > selectedToTick!!) selectedToTick = null
                             rebuildActiveSession()
                         }
                     },
@@ -612,8 +640,9 @@ private fun ScoreScreen(score: ScorePackage, repository: ScorePackageRepository,
                 Button(
                     onClick = {
                         cursorMeasureInfo?.let { measure ->
-                            val endTick = measure.startTick + measure.durationTicks - 1
+                            val endTick = if (exactCursor) cursorTick ?: measure.startTick else measure.startTick + measure.durationTicks - 1
                             selectedToTick = endTick
+                            selectedToIsNote = exactCursor
                             if (selectedFromTick != null && endTick < selectedFromTick!!) selectedFromTick = null
                             rebuildActiveSession()
                         }
@@ -625,6 +654,13 @@ private fun ScoreScreen(score: ScorePackage, repository: ScorePackageRepository,
                     onClick = {
                         selectedFromTick = null
                         selectedToTick = null
+                        selectedFromIsNote = false
+                        selectedToIsNote = false
+                        pendingPlaybackStartTick = null
+                        playbackCountdown = null
+                        playback.stop()
+                        playing = false
+                        playbackState = null
                         practice = null
                         practiceState = null
                         continuousFeedback = null
@@ -731,6 +767,7 @@ private fun ScoreScreen(score: ScorePackage, repository: ScorePackageRepository,
                     factory = { context -> ScoreWebView(context) },
                     update = { view ->
                         view.onMeasureSelected = moveCursorToMeasure
+                        view.onNoteSelected = moveCursorToNote
                         val svg = runCatching { repository.pageSvg(score, page) }.getOrElse { "<svg xmlns='http://www.w3.org/2000/svg'><text x='30' y='50'>${it.message}</text></svg>" }
                         val key = "${score.id}:$page"
                         // ContinuousFeedback intentionally points to the next group
@@ -758,7 +795,7 @@ private fun ScoreScreen(score: ScorePackage, repository: ScorePackageRepository,
                         // note itself. A proportional position across the whole
                         // measure starts too far left when the measure begins with
                         // accidentals or other notation that takes horizontal space.
-                        val alignCursorToExpected = practiceState != null || playbackState != null
+                        val alignCursorToExpected = exactCursor || practiceState != null || playbackState != null
                         val occurrences = emptyMap<Int, Int>()
                         val occurrenceScript = occurrences.entries.joinToString(",", prefix = "{", postfix = "}") { (pitch, occurrence) -> "\"$pitch\":$occurrence" }
                         // Resolve every glyph in the original chord before filtering
@@ -781,10 +818,11 @@ private fun ScoreScreen(score: ScorePackage, repository: ScorePackageRepository,
                         val fromTickScript = selectedFromTick?.toString() ?: "null"
                         val toTickScript = selectedToTick?.toString() ?: "null"
                         val measureMapScript = timeline?.measures.orEmpty().joinToString(",", prefix = "[", postfix = "]") { "{n:${it.number},s:${it.startTick},d:${it.durationTicks}}" }
-                        val script = "$cursorScript;showSelectedRange($fromTickScript,$toTickScript,$measureMapScript)"
+                        val script = "$cursorScript;PianoTrainerScoreSelection.showRange($fromTickScript,$toTickScript,$selectedFromIsNote,$selectedToIsNote,$measureMapScript)"
                         if (view.tag != key) {
                             val inlineSvg = svg.substring(svg.indexOf("<svg").coerceAtLeast(0))
                             val html = """<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes"><style>html,body{margin:0;background:#fff;overflow:auto}img{display:none}body>svg{display:block;width:100%;height:auto;margin:0 auto}</style></head><body>$inlineSvg<script>$scoreRenderingHelpers
+$scoreSelectionHelpers
 function midiPitch(n){const b={c:0,d:2,e:4,f:5,g:7,a:9,b:11};let p=(parseInt(n.dataset.oct)+1)*12+b[n.dataset.pname];const a=n.dataset.accid||n.dataset.accidGes||'';if(a==='s'||a==='ss')p+=a==='ss'?2:1;if(a==='f'||a==='ff')p-=a==='ff'?2:1;return p}
 function cropScorePage(){const root=document.body.querySelector(':scope > svg');if(!root||root.dataset.cropped==='true'||!root.viewBox)return;const footers=[...root.querySelectorAll('.pgFoot')];footers.forEach(footer=>footer.remove());if(!footers.length){root.dataset.cropped='false';return}const systems=[...root.querySelectorAll('.system')];const box=root.viewBox.baseVal;const rootRect=root.getBoundingClientRect();if(!systems.length||!box.width||!box.height||!rootRect.height)return;const originalHeight=box.height;const bottom=Math.max(...systems.map(system=>system.getBoundingClientRect().bottom));const bottomInViewBox=box.y+(bottom-rootRect.top)*originalHeight/rootRect.height;const padding=Math.max(50,box.width*0.018);const stablePageFloor=originalHeight*0.81;const croppedHeight=Math.min(originalHeight,Math.max(stablePageFloor,bottomInViewBox+padding-box.y));const inner=root.querySelector('svg.definition-scale');if(inner&&inner.viewBox&&inner.viewBox.baseVal.height){const innerBox=inner.viewBox.baseVal;const innerHeight=innerBox.height*croppedHeight/originalHeight;inner.setAttribute('viewBox',innerBox.x+' '+innerBox.y+' '+innerBox.width+' '+innerHeight)}root.dataset.originalViewBoxHeight=String(originalHeight);root.setAttribute('viewBox',box.x+' '+box.y+' '+box.width+' '+croppedHeight);root.dataset.cropped='true';root.dataset.croppedViewBoxHeight=String(croppedHeight)}
 function fitScorePage(){const root=document.body.querySelector(':scope > svg');if(!root||!root.viewBox)return;const box=root.viewBox.baseVal;if(!box.width||!box.height)return;const width=innerWidth;const height=innerHeight;const renderedWidth=Math.min(width,height*box.width/box.height);root.style.width=renderedWidth+'px';root.style.height='auto';PianoTrainerBridge.reportVisualDiagnostic(JSON.stringify({layout:{viewportWidth:width,viewportHeight:height,viewBoxWidth:box.width,viewBoxHeight:box.height,renderedWidth:renderedWidth,renderedHeight:renderedWidth*box.height/box.width}}))}
@@ -807,9 +845,10 @@ function drawWrongAccidental(parent,x,y,pitch,keyFifths,staffStep){const acciden
 function drawNativeWrongNotes(wrong,cursor,selection,keyFifths){const entries=nativeEntries(selection);if(!entries.length)return false;const root=entries[0].root;const staves=nativeStaves(root);if(!staves.length)return false;wrong.forEach(pitch=>PianoTrainerScoreRendering.closestExpectedEntries(entries,pitch).forEach(reference=>{const staff=PianoTrainerScoreRendering.closestStaffToReference(staves,reference);if(!staff)return;const middleLinePitch=staff.clef==='treble'?34:22;const y=staff.center-(staffPositionForPitch(pitch,keyFifths)-middleLinePitch)*staff.step/2;const lineRect=cursor.line.getBoundingClientRect();const point=screenPointIn(root,lineRect.left+lineRect.width/2,lineRect.top+lineRect.height/2);const x=point.x;const dx=x-reference.x,dy=y-reference.y;const marker=reference.note.cloneNode(true);marker.removeAttribute('data-id');marker.removeAttribute('data-segment-id');marker.setAttribute('class','wrong-note-marker Note');marker.style.setProperty('fill','#d01818','important');marker.style.setProperty('stroke','#8b0000','important');marker.style.setProperty('color','#d01818','important');marker.style.setProperty('pointer-events','none');const rootScreenMatrix=root.getScreenCTM&&root.getScreenCTM();const noteScreenMatrix=reference.note.getScreenCTM&&reference.note.getScreenCTM();const ctm=rootScreenMatrix&&noteScreenMatrix?PianoTrainerScoreRendering.matrixRelativeToRoot(rootScreenMatrix,noteScreenMatrix):null;if(ctm){marker.setAttribute('transform',PianoTrainerScoreRendering.matrixText(PianoTrainerScoreRendering.matrixAtOffset(ctm,dx,dy)));root.appendChild(marker)}else{const wrapper=svgEl('g');wrapper.setAttribute('class','wrong-note-marker');wrapper.setAttribute('transform','translate('+dx+' '+dy+')');wrapper.appendChild(marker);root.appendChild(wrapper)}drawWrongAccidental(root,x,y,pitch,keyFifths,staff.step)}));return true}
 function drawWrongNotes(measures,wrong,cursor,selection,keyFifths){if(!wrong.length)return;if(drawNativeWrongNotes(wrong,cursor,selection,keyFifths))return;const expectedEntries=(selection.notes||[]).filter(e=>Number.isFinite(e.pitch));const entries=expectedEntries.length?expectedEntries:noteEntries(measures);if(!entries.length)return;wrong.forEach(pitch=>PianoTrainerScoreRendering.closestExpectedEntries(entries,pitch).forEach(reference=>{const g=markerGeometry(reference,pitch,cursor,keyFifths);const marker=svgEl('ellipse');marker.setAttribute('class','wrong-note-marker');marker.setAttribute('cx',g.x);marker.setAttribute('cy',g.y);marker.setAttribute('rx',g.rx);marker.setAttribute('ry',g.ry);marker.setAttribute('transform','rotate(-18 '+g.x+' '+g.y+')');marker.style.setProperty('fill','#d01818','important');marker.style.setProperty('stroke','#8b0000','important');marker.style.setProperty('stroke-width','18','important');marker.style.setProperty('color','#d01818','important');marker.style.setProperty('pointer-events','none');g.parent.appendChild(marker);drawWrongAccidental(g.parent,g.x,g.y,pitch,keyFifths,g.staffStep)}))}
 function highlightNotes(measure,expected,accepted,wrong,tickInMeasure,measureTicks,alignExpected,occurrences,scoreIds,scorePitches,keyFifths){document.querySelectorAll('.note,.Note').forEach(n=>colorNote(n,'black'));const measures=[...document.querySelectorAll('.measure[data-n="'+measure+'"]')];if(!measures.length){clearPracticeCursor();return}const timedFraction=Math.max(0,Math.min(1,tickInMeasure/measureTicks));const selection=visualSelection(measures[0],measures,expected,timedFraction,occurrences,scoreIds,scorePitches);reportVisualDiagnostic(measure,tickInMeasure,measureTicks,expected,selection,keyFifths);const cursor=drawPracticeCursor(measures[0],tickInMeasure,measureTicks,selection,alignExpected);selection.notes.forEach(e=>colorNote(e.note,accepted.includes(e.pitch)?'#16833b':'#1565c0'));drawWrongNotes(measures,wrong,cursor,selection,keyFifths)}
-function showSelectedRange(fromTick,toTick,measureMap){document.querySelectorAll('.range-highlight').forEach(e=>e.remove());if(fromTick===null&&toTick===null)return;const from=fromTick===null?0:fromTick;const to=toTick===null?Number.MAX_SAFE_INTEGER:toTick;document.querySelectorAll('.measure[data-n]').forEach(m=>{const info=(measureMap||[]).find(x=>x.n===parseInt(m.dataset.n));if(!info)return;const start=info.s,end=start+info.d,left=Math.max(start,from),right=Math.min(end,to);if(right<left||right<start||left>end)return;const box=m.getBBox(),parent=m.parentNode;const x1=box.x+box.width*Math.max(0,(left-start)/info.d);const x2=box.x+box.width*Math.min(1,(right-start)/info.d);const shade=svgEl('rect');shade.setAttribute('class','range-highlight');shade.setAttribute('x',x1);shade.setAttribute('y',box.y);shade.setAttribute('width',Math.max(18,x2-x1));shade.setAttribute('height',box.height);shade.setAttribute('fill','#687078');shade.setAttribute('opacity','0.16');shade.style.pointerEvents='none';parent.insertBefore(shade,m)})}
+
 function measureAtPoint(x,y){return [...document.querySelectorAll('.measure[data-n]')].find(m=>{const r=m.getBoundingClientRect();return x>=r.left&&x<=r.right&&y>=r.top&&y<=r.bottom})}
-document.addEventListener('click',event=>{const direct=event.target instanceof Element?event.target.closest('.measure[data-n]'):null;const measure=direct||measureAtPoint(event.clientX,event.clientY);const number=measure&&parseInt(measure.dataset.n,10);if(Number.isInteger(number))PianoTrainerBridge.measureSelected(number)});
+PianoTrainerScoreSelection.setGroups($selectionMap);
+PianoTrainerScoreSelection.install(PianoTrainerBridge,measureAtPoint,'$key');
 addEventListener('resize',fitScorePage);cropScorePage();fitScorePage();PianoTrainerBridge.pageReady('$key');
 </script></body></html>"""
                         view.tag = key
@@ -937,6 +976,7 @@ private class ScoreWebView(context: Context) : WebView(context) {
     private var requestedPageKey = ""
     private var loadedPageKey = ""
     var onMeasureSelected: ((Int) -> Unit)? = null
+    var onNoteSelected: ((Long) -> Unit)? = null
 
     private inner class SelectionBridge {
         @JavascriptInterface
@@ -950,6 +990,11 @@ private class ScoreWebView(context: Context) : WebView(context) {
         @JavascriptInterface
         fun reportVisualDiagnostic(payload: String) {
             if (BuildConfig.DEBUG) Log.d("PianoTrainerVisual", payload.take(4_000))
+        }
+
+        @JavascriptInterface
+        fun noteSelected(pageKey: String, tick: Long) {
+            post { if (pageKey == requestedPageKey) onNoteSelected?.invoke(tick) }
         }
 
         @JavascriptInterface

@@ -45,9 +45,8 @@ class MidiPlayback(private val controller: MidiController) {
         require(volume in 0.05f..1f) { "Громкость должна быть от 5% до 100%" }
         stop()
         val session = generation
-        val allEvents = MidiFile.parse(midi)
-        val events = allEvents.filter { it.tick >= fromTick && (untilTick == null || it.tick < untilTick) }
-        require(events.isNotEmpty()) { "В выбранном интервале нет MIDI-событий" }
+        val events = midiPlaybackSegment(midi, fromTick, untilTick)
+        require(events.any { it.message.isNotEmpty() }) { "В выбранном интервале нет MIDI-событий" }
         val startMillis = events.first().millis
         val startedAt = SystemClock.uptimeMillis()
         events.forEach { event ->
@@ -55,8 +54,10 @@ class MidiPlayback(private val controller: MidiController) {
             val message = scaleNoteVelocity(event.message, volume)
             val task = Runnable {
                 if (session != generation) return@Runnable
-                controller.send(message)
-                updateActiveNotes(message)
+                if (message.isNotEmpty()) {
+                    controller.send(message)
+                    updateActiveNotes(message)
+                }
             }
             scheduled += task
             handler.postDelayed(task, ((event.millis - startMillis) / speed).roundToLong())
@@ -68,7 +69,8 @@ class MidiPlayback(private val controller: MidiController) {
                 if (session != generation) return
                 val elapsedReal = (SystemClock.uptimeMillis() - startedAt).coerceIn(0L, realDuration)
                 val elapsedMusic = (elapsedReal * speed).roundToLong().coerceAtMost(musicDuration)
-                onProgress(MidiPlaybackState(tickAt(events, elapsedMusic + startMillis), activePitches()))
+                val tick = tickAt(events, elapsedMusic + startMillis)
+                onProgress(MidiPlaybackState(if (untilTick == null) tick else minOf(tick, untilTick - 1), activePitches()))
                 if (elapsedReal < realDuration) handler.postDelayed(this, 50L)
             }
         }
@@ -78,21 +80,28 @@ class MidiPlayback(private val controller: MidiController) {
             if (session != generation) return@Runnable
             scheduled.forEach(handler::removeCallbacks)
             scheduled.clear()
-            activeNotes.clear()
-            repeat(16) { channel -> controller.send(byteArrayOf((0xB0 + channel).toByte(), 123, 0)) }
+            releaseNotes()
             onFinished()
         }
         scheduled += finalTask
-        handler.postDelayed(finalTask, realDuration + 100L)
+        handler.postDelayed(finalTask, realDuration + if (untilTick == null) 100L else 0L)
     }
 
     fun stop() {
         generation++
         scheduled.forEach(handler::removeCallbacks)
         scheduled.clear()
+        releaseNotes()
+    }
+
+    private fun releaseNotes() {
+        // Pedal must be released as well: CC123 alone can leave sustained sound.
+        activeNotes.forEach { key -> controller.send(byteArrayOf((0x80 + key / 128).toByte(), (key % 128).toByte(), 0)) }
         activeNotes.clear()
-        // All notes off on every MIDI channel, so stopping never leaves sustained notes.
-        repeat(16) { channel -> controller.send(byteArrayOf((0xB0 + channel).toByte(), 123, 0)) }
+        repeat(16) { channel ->
+            controller.send(byteArrayOf((0xB0 + channel).toByte(), 64, 0))
+            controller.send(byteArrayOf((0xB0 + channel).toByte(), 123, 0))
+        }
     }
 
     private fun updateActiveNotes(message: ByteArray) {
@@ -123,10 +132,30 @@ class MidiPlayback(private val controller: MidiController) {
 
 data class TimedMidiEvent(val millis: Long, val tick: Long, val message: ByteArray)
 
-private object MidiFile {
+/** Boundary markers are timed with the same tempo map as the MIDI events. */
+internal fun midiPlaybackSegment(midi: ByteArray, fromTick: Long, untilTick: Long?): List<TimedMidiEvent> {
+    require(fromTick >= 0 && (untilTick == null || untilTick > fromTick))
+    val all = MidiFile.parse(midi, listOfNotNull(fromTick, untilTick))
+    // Restore program/controller state when starting mid-score. Never replay
+    // earlier note-ons (including notes tied over the selected start).
+    val state = linkedMapOf<Pair<Int, Int>, TimedMidiEvent>()
+    all.filter { it.tick < fromTick && it.message.isNotEmpty() }.forEach { event ->
+        val command = event.message[0].toInt() and 0xF0
+        if (command == 0xB0 || command == 0xC0 || command == 0xE0) {
+            val key = (event.message[0].toInt() and 0xFF) to if (command == 0xB0) event.message[1].toInt() else -1
+            state[key] = event
+        }
+    }
+    val startMillis = all.first { it.tick == fromTick }.millis
+    val restored = state.values.map { it.copy(tick = fromTick, millis = startMillis) }
+    return restored + all.filter { it.tick >= fromTick &&
+        (untilTick == null || it.tick < untilTick || (it.tick == untilTick && it.message.isEmpty())) }
+}
+
+internal object MidiFile {
     private data class RawEvent(val tick: Long, val message: ByteArray?, val tempo: Int?)
 
-    fun parse(data: ByteArray): List<TimedMidiEvent> {
+    fun parse(data: ByteArray, boundaryTicks: List<Long> = emptyList()): List<TimedMidiEvent> {
         require(data.size >= 14 && data.copyOfRange(0, 4).contentEquals("MThd".encodeToByteArray())) { "Некорректный MIDI" }
         require(data.copyOfRange(4, 8).contentEquals(byteArrayOf(0, 0, 0, 6))) { "Некорректный заголовок MIDI" }
         val tracks = u16(data, 10)
@@ -177,6 +206,7 @@ private object MidiFile {
             }
             offset = end
         }
+        boundaryTicks.distinct().forEach { raw += RawEvent(it, byteArrayOf(), null) }
         var tempo = 500_000
         var previousTick = 0L
         var micros = 0.0
